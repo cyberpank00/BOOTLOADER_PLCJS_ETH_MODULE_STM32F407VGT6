@@ -13,6 +13,7 @@
 #include "netif/etharp.h"
 #include "ethernetif.h"
 #include "eth_custom_phy_interface.h"
+#include "net_id.h"
 #include <string.h>
 
 #define IFNAME0 's'
@@ -141,7 +142,9 @@ void HAL_ETH_RxCpltCallback(ETH_HandleTypeDef *handlerEth)
 /* ---- Low-level init ----------------------------------------------------- */
 static void low_level_init(struct netif *netif)
 {
-    uint8_t mac[6] = { 0x02, 0x01, 0x02, 0x03, 0x04, 0x05 };
+    uint8_t mac[6];
+
+    net_id_get_mac(mac);
 
     heth.Instance            = ETH;
     heth.Init.MACAddr        = mac;

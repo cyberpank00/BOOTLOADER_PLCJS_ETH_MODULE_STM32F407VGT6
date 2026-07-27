@@ -144,6 +144,18 @@ static void sm_install_fw(void)
 
 static void sm_verify_app(void)
 {
+    /* Verify the firmware header in the installed image carries the
+     * correct product identity (redundant check after installation). */
+    if (!app_validate_header(APP_FLASH_BASE, PRODUCT_ID_DEFAULT,
+                             (uint16_t)HW_REVISION_DEFAULT)) {
+        s_meta.app_valid   = 0u;
+        s_meta.last_error  = BOOT_ERR_PRODUCT_MISMATCH;
+        s_meta.boot_state  = (uint32_t)BOOT_ERROR;
+        metadata_save(&s_meta);
+        s_state = BOOT_ERROR;
+        led_indication_set(LED_PATTERN_ERROR);
+        return;
+    }
     if (app_validate_full(APP_FLASH_BASE,
                           s_meta.app_image_size,
                           s_meta.app_image_crc32)) {

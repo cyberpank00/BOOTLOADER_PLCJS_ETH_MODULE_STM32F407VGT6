@@ -46,12 +46,20 @@ Defined in `Application/flash/flash_map.h`.
 | Staging | `0x08080000` | 256 KB | Sectors 8-9 |
 | App settings | `0x080C0000` | 128 KB | Sector 10, owned by main app |
 
-Important constants:
+The application image must contain a `fw_header_t` struct at offset `0x200` from
+`APP_FLASH_BASE`. The bootloader reads `product_id` and `hw_revision` from the
+binary itself (not only from what the updater tool claims) at three points:
+`FINALIZE_UPDATE`, `INSTALL_UPDATE` verification, and `BOOT_VERIFY_APP`.
+See [Firmware header](#firmware-header) below.
 
-- `PRODUCT_ID_DEFAULT = 0x12D1D4A0`
-- `HW_REVISION_DEFAULT = 1`
-- `BOOTLOADER_VERSION = 1.0.0`
-- `FW_MAX_BLOCK_SIZE = 240` bytes
+Identity constants (defaults for the 12-DI/D4MG variant, CMake-configurable):
+
+| Constant | Default | CMake flag |
+|---|---|---|
+| `PRODUCT_ID_DEFAULT` | `0x12D1D4A0` | `-DPRODUCT_ID=0x...` |
+| `HW_REVISION_DEFAULT` | `1` | `-DHW_REVISION=N` |
+| `BOOTLOADER_VERSION` | `1.0.0` | — |
+| `FW_MAX_BLOCK_SIZE` | `240` bytes | — |
 
 ## Network configuration
 
@@ -109,9 +117,9 @@ Normal OTA flow:
 2. receive `BEGIN_UPDATE`
 3. erase staging and switch to `BOOT_RECEIVE_FW`
 4. receive all firmware blocks
-5. `FINALIZE_UPDATE` verifies staging CRC32
-6. `INSTALL_UPDATE` copies firmware to app region
-7. app image is validated
+5. `FINALIZE_UPDATE` verifies staging CRC32 **and** reads `fw_header_t` from the staging binary
+6. `INSTALL_UPDATE` copies firmware to app region and re-validates the header
+7. app image is validated (CRC32 + firmware header)
 8. bootloader jumps to application
 
 ## Modbus TCP update protocol
@@ -233,7 +241,7 @@ transitions.
 
 Project build system: `CMake + Ninja`.
 
-Typical local build:
+Default build (12-DI/D4MG, `PRODUCT_ID=0x12D1D4A0`, `HW_REVISION=1`):
 
 ```bash
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
@@ -245,6 +253,71 @@ Outputs:
 - `BOOTLOADER_PLCJS.elf`
 - `BOOTLOADER_PLCJS.hex`
 - `BOOTLOADER_PLCJS.bin`
+
+## Building for module variants
+
+`PRODUCT_ID_DEFAULT` and `HW_REVISION_DEFAULT` are guarded with `#ifndef` in
+`Application/flash/flash_map.h` so they can be overridden at build time.
+
+Pass `-DPRODUCT_ID` and `-DHW_REVISION` to CMake to target a different module:
+
+```bash
+# 12 Digital Inputs / 4 Digital Outputs (default)
+cmake -S . -B build/12di -DPRODUCT_ID=0x12D1D4A0 -DHW_REVISION=1
+
+# 12 Digital Outputs
+cmake -S . -B build/12do -DPRODUCT_ID=0x12D00000 -DHW_REVISION=1
+
+# 4 RTD inputs
+cmake -S . -B build/4rtd -DPRODUCT_ID=0x04D00000 -DHW_REVISION=1
+
+# 8 Analog Inputs
+cmake -S . -B build/8ai -DPRODUCT_ID=0x08A10000 -DHW_REVISION=1
+
+# 8 Analog Outputs
+cmake -S . -B build/8ao -DPRODUCT_ID=0x08A00000 -DHW_REVISION=1
+```
+
+Each resulting `BOOTLOADER_PLCJS.bin` will only accept OTA images whose
+`fw_header_t.product_id` and `fw_header_t.hw_revision` match the compiled-in
+values.  Flashing firmware for the wrong module variant is rejected at
+`FINALIZE_UPDATE` before anything is written to the application region.
+
+## Firmware header
+
+Starting with this release, valid application images must embed a `fw_header_t`
+struct at `APP_FLASH_BASE + 0x200` (i.e. at byte offset `0x200` in `app.bin`).
+
+The header struct is defined in `Application/validate/app_validate.h`:
+
+```c
+typedef struct __attribute__((packed)) {
+    uint32_t magic;               /* 0x504C434A "PLCJ"             */
+    uint32_t product_id;          /* must match PRODUCT_ID_DEFAULT  */
+    uint16_t hw_revision;         /* must match HW_REVISION_DEFAULT */
+    uint16_t reserved0;
+    uint32_t fw_version;          /* informational                  */
+    uint32_t image_size;          /* total binary size in bytes     */
+    uint32_t image_crc32;         /* CRC32 with this field = 0      */
+    uint32_t vector_table_offset; /* always 0                       */
+    uint32_t reserved1[2];
+} fw_header_t;
+```
+
+The paired application project places this header automatically via a
+dedicated linker section (`.fw_header`) and the `tools/gen_app_bin.py`
+post-build script that patches `image_size` and `image_crc32`.
+
+**Validation chain** (three independent checks):
+
+| Point | Where | What is checked |
+|---|---|---|
+| `FINALIZE_UPDATE` | `fw_update_proto.c` | header in **staging** flash |
+| `INST_VERIFYING` | `fw_installer.c` | header in **app** flash after copy |
+| `BOOT_VERIFY_APP` | `boot_main.c` | header in **app** flash before jump |
+
+If any check fails, the error code `PRODUCT_MISMATCH` (1) is returned and
+the bootloader enters `BOOT_ERROR` state.
 
 ## Known limitations
 

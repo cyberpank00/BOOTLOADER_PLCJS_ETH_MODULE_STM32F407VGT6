@@ -7,6 +7,7 @@
 #include "flash_map.h"
 #include "flash_if.h"
 #include "crc32.h"
+#include "app_validate.h"
 #include "boot_state.h"
 #include <string.h>
 
@@ -122,7 +123,7 @@ static void exec_begin_update(void)
     s_cmd_status = CMD_STATUS_OK;
 }
 
-static void exec_write_block(void)
+static void exec_write_block(uint16_t reg_qty)
 {
     if (s_meta->boot_state != (uint32_t)BOOT_RECEIVE_FW) {
         s_meta->last_error = BOOT_ERR_BAD_PARAMS;
@@ -139,6 +140,19 @@ static void exec_write_block(void)
         return;
     }
     if (data_len == 0u || data_len > FW_MAX_BLOCK_SIZE) {
+        s_meta->last_error = BOOT_ERR_BAD_PARAMS;
+        s_cmd_status = CMD_STATUS_ERROR;
+        return;
+    }
+
+    /* Ensure the master actually delivered enough data registers for the
+     * declared data_len in this same FC16 transaction: 3 header registers
+     * (block_idx hi/lo + data_len) plus ceil(data_len/2) data registers.
+     * Without this check a short frame would cause stale buffer contents to
+     * be flashed (later caught by the finalize CRC, but silently corrupting
+     * the block until then). */
+    uint16_t need_regs = 3u + (uint16_t)((data_len + 1u) / 2u);
+    if (reg_qty < need_regs) {
         s_meta->last_error = BOOT_ERR_BAD_PARAMS;
         s_cmd_status = CMD_STATUS_ERROR;
         return;
@@ -184,6 +198,16 @@ static void exec_finalize(void)
                                s_meta->image_size);
     if (crc != s_meta->image_crc32) {
         s_meta->last_error = BOOT_ERR_IMAGE_CRC;
+        s_cmd_status = CMD_STATUS_ERROR;
+        return;
+    }
+
+    /* Validate firmware header embedded in the staging binary.
+     * This ensures the binary itself carries the correct product identity,
+     * independent of what the updater tool claimed in BEGIN_UPDATE. */
+    if (!app_validate_header(STAGING_FLASH_BASE, PRODUCT_ID_DEFAULT,
+                             (uint16_t)HW_REVISION_DEFAULT)) {
+        s_meta->last_error = BOOT_ERR_PRODUCT_MISMATCH;
         s_cmd_status = CMD_STATUS_ERROR;
         return;
     }
@@ -298,7 +322,7 @@ nmbs_error fw_proto_write_holding_regs(uint16_t addr, uint16_t qty,
          * Master must send block_idx (2 regs) + data_len (1 reg) +
          * at least 1 data reg in the same FC16 transaction. */
         if (addr == 0x0100u && qty >= 4u) {
-            exec_write_block();
+            exec_write_block(qty);
         }
         return NMBS_ERROR_NONE;
     }

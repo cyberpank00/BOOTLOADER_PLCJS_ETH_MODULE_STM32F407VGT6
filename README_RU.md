@@ -47,12 +47,20 @@ Ethernet bootloader для модуля PLCJS 12-DI на базе `STM32F407VGT6
 | Staging | `0x08080000` | 256 KB | Сектора 8-9 |
 | App settings | `0x080C0000` | 128 KB | Сектор 10, используется main app |
 
-Важные константы:
+Образ приложения должен содержать структуру `fw_header_t` по смещению `0x200` от
+`APP_FLASH_BASE`. Бутлоадер читает `product_id` и `hw_revision` из самого бинарника
+(не только из того, что сказал инструмент обновления) в трёх точках:
+`FINALIZE_UPDATE`, верификация при установке, `BOOT_VERIFY_APP`.
+См. [Заголовок прошивки](#заголовок-прошивки) ниже.
 
-- `PRODUCT_ID_DEFAULT = 0x12D1D4A0`
-- `HW_REVISION_DEFAULT = 1`
-- `BOOTLOADER_VERSION = 1.0.0`
-- `FW_MAX_BLOCK_SIZE = 240` байт
+Константы идентификации (дефолты для варианта 12-DI/D4MG, настраиваются через CMake):
+
+| Константа | Значение | CMake-флаг |
+|---|---|---|
+| `PRODUCT_ID_DEFAULT` | `0x12D1D4A0` | `-DPRODUCT_ID=0x...` |
+| `HW_REVISION_DEFAULT` | `1` | `-DHW_REVISION=N` |
+| `BOOTLOADER_VERSION` | `1.0.0` | — |
+| `FW_MAX_BLOCK_SIZE` | `240` байт | — |
 
 ## Сетевая конфигурация
 
@@ -110,9 +118,9 @@ Bootloader остается активным, если выполняется х
 2. получение `BEGIN_UPDATE`
 3. стирание staging и переход в `BOOT_RECEIVE_FW`
 4. прием всех блоков прошивки
-5. `FINALIZE_UPDATE` проверяет `CRC32` staging-области
-6. `INSTALL_UPDATE` копирует прошивку в область приложения
-7. образ приложения проходит валидацию
+5. `FINALIZE_UPDATE` проверяет `CRC32` staging-области **и** читает `fw_header_t` из самого бинарника
+6. `INSTALL_UPDATE` копирует прошивку в область приложения и повторно проверяет заголовок
+7. образ приложения проходит валидацию (CRC32 + заголовок прошивки)
 8. bootloader передает управление приложению
 
 ## OTA-протокол по Modbus TCP
@@ -246,6 +254,49 @@ ninja -C build
 - `BOOTLOADER_PLCJS.elf`
 - `BOOTLOADER_PLCJS.hex`
 - `BOOTLOADER_PLCJS.bin`
+
+## Сборка для вариантов модулей
+
+`PRODUCT_ID_DEFAULT` и `HW_REVISION_DEFAULT` защищены `#ifndef` в `Application/flash/flash_map.h`
+и переопределяются через CMake:
+
+```bash
+# 12 дискретных входа / 4 выхода (дефолт)
+cmake -S . -B build/12di -DPRODUCT_ID=0x12D1D4A0 -DHW_REVISION=1
+
+# 12 дискретных выхода
+cmake -S . -B build/12do -DPRODUCT_ID=0x12D00000 -DHW_REVISION=1
+
+# 4 входа RTD
+cmake -S . -B build/4rtd -DPRODUCT_ID=0x04D00000 -DHW_REVISION=1
+
+# 8 аналоговых входов
+cmake -S . -B build/8ai -DPRODUCT_ID=0x08A10000 -DHW_REVISION=1
+
+# 8 аналоговых выходов
+cmake -S . -B build/8ao -DPRODUCT_ID=0x08A00000 -DHW_REVISION=1
+```
+
+Каждый результирующий `BOOTLOADER_PLCJS.bin` будет принимать OTA-образы
+только с совпадающими `fw_header_t.product_id` и `hw_revision`.
+Загрузка прошивки для неподходящего модуля отклоняется
+при `FINALIZE_UPDATE` — до записи в область приложения.
+
+## Заголовок прошивки
+
+Начиная с этого релиза, валидные образы приложения должны встраивать `fw_header_t`
+по адресу `APP_FLASH_BASE + 0x200` (смещение `0x200` в `app.bin`).
+
+Цепочка валидации (три независимые проверки):
+
+| Точка проверки | Файл | Что проверяется |
+|---|---|---|
+| `FINALIZE_UPDATE` | `fw_update_proto.c` | заголовок в **staging** flash |
+| `INST_VERIFYING` | `fw_installer.c` | заголовок в **app** flash после копирования |
+| `BOOT_VERIFY_APP` | `boot_main.c` | заголовок в **app** flash перед передачей |
+
+При ошибке проверки возвращается код ошибки `PRODUCT_MISMATCH` (1),
+бутлоадер переходит в состояние `BOOT_ERROR`.
 
 ## Известные ограничения
 

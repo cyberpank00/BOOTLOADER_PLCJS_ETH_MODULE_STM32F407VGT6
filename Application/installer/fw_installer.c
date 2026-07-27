@@ -8,6 +8,7 @@
 #include "flash_if.h"
 #include "crc32.h"
 #include "app_validate.h"
+#include "boot_state.h"
 #include <string.h>
 
 #define COPY_CHUNK  256u
@@ -69,6 +70,12 @@ installer_state_t fw_installer_poll(metadata_t *meta)
         }
         if (!app_validate_vectors(APP_FLASH_BASE)) {
             meta->last_error = BOOT_ERR_APP_VALIDATE;
+            s_state = INST_ERROR;
+            break;
+        }
+        if (!app_validate_header(APP_FLASH_BASE, PRODUCT_ID_DEFAULT,
+                                 (uint16_t)HW_REVISION_DEFAULT)) {
+            meta->last_error = BOOT_ERR_PRODUCT_MISMATCH;
             s_state = INST_ERROR;
             break;
         }

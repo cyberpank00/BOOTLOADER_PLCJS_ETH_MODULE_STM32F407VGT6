@@ -48,3 +48,22 @@ bool app_validate_full(uint32_t app_base, uint32_t expected_size,
     uint32_t crc = crc32_calc((const uint8_t *)app_base, expected_size);
     return crc == expected_crc;
 }
+
+bool app_validate_header(uint32_t app_base,
+                         uint32_t expected_product_id,
+                         uint16_t expected_hw_rev)
+{
+    fw_header_t hdr;
+    if (!app_read_header(app_base, &hdr)) {
+        return false;  /* magic mismatch -- no valid header */
+    }
+    if (hdr.product_id != expected_product_id) {
+        return false;
+    }
+    /* Compare major byte only: (revision >> 8).
+     * Minor byte (non-pinout HW changes) does not break FW compatibility. */
+    if ((hdr.hw_revision >> 8u) != (expected_hw_rev >> 8u)) {
+        return false;
+    }
+    return true;
+}

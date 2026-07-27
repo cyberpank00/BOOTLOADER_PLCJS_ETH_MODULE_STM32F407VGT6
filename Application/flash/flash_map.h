@@ -65,8 +65,20 @@
 
 /* ---- Firmware image header ---------------------------------------------- */
 #define FW_IMAGE_MAGIC          0x504C434Au  /* "PLCJ" */
+
+/* PRODUCT_ID_DEFAULT and HW_REVISION_DEFAULT can be overridden at build time
+ * by passing -DPRODUCT_ID_DEFAULT=<val> and -DHW_REVISION_DEFAULT=<val> to
+ * the compiler (e.g. via CMake: -DPRODUCT_ID=0x12D1D4A0 -DHW_REVISION=0x0101).
+ *
+ * HW_REVISION encoding: (major << 8) | minor
+ *   e.g. hw:01.02 → 0x0102
+ * OTA acceptance checks product_id exactly and hw_revision major byte only. */
+#ifndef PRODUCT_ID_DEFAULT
 #define PRODUCT_ID_DEFAULT      0x12D1D4A0u
-#define HW_REVISION_DEFAULT     1u
+#endif
+#ifndef HW_REVISION_DEFAULT
+#define HW_REVISION_DEFAULT     0x0101u  /* hw:01.01 */
+#endif
 #define BOOTLOADER_VERSION      0x00010000u  /* 1.0.0 */
 
 /* Maximum firmware block size for Modbus transfer (bytes). */

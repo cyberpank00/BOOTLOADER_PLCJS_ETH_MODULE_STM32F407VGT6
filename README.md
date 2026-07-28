@@ -1,4 +1,9 @@
-# BOOTLOADER_PLCJS_ETH_MODULE_12DI_D4MG_STM32F407VGT6
+# BOOTLOADER_PLCJS_ETH_MODULE_STM32F407VGT6
+
+Universal bootloader for all PLCJS ETH module variants (12di, 12do, 4rtd,
+4aic, 4aiv, 4ao, ...). The firmware is identical for every board; variants
+differ only in the compiled-in `PRODUCT_ID` / `HW_REVISION`
+(see [Building for module variants](#building-for-module-variants)).
 
 Ethernet bootloader for the PLCJS 12-DI module based on `STM32F407VGT6`.
 

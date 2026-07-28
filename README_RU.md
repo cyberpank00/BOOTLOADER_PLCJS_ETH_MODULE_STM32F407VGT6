@@ -1,4 +1,9 @@
-# BOOTLOADER_PLCJS_ETH_MODULE_12DI_D4MG_STM32F407VGT6
+# BOOTLOADER_PLCJS_ETH_MODULE_STM32F407VGT6
+
+Универсальный загрузчик для всех вариантов модулей PLCJS ETH (12di, 12do,
+4rtd, 4aic, 4aiv, 4ao, ...). Прошивка идентична для всех плат; варианты
+отличаются только зашитыми `PRODUCT_ID` / `HW_REVISION`
+(см. [Сборка для вариантов модулей](#сборка-для-вариантов-модулей)).
 
 Ethernet bootloader для модуля PLCJS 12-DI на базе `STM32F407VGT6`.
 

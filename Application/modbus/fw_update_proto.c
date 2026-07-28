@@ -292,8 +292,9 @@ nmbs_error fw_proto_read_input_regs(uint16_t addr, uint16_t qty,
         }
         u32_to_regs(app_ver, &ir[0x06]);
     }
-    u32_to_regs(s_meta->product_id ? s_meta->product_id : PRODUCT_ID_DEFAULT,
-                &ir[0x08]);
+    /* Bootloader identity: always the compile-time constant, so the tool can
+     * compare it against the product_id embedded in the image to be flashed. */
+    u32_to_regs(PRODUCT_ID_DEFAULT,           &ir[0x08]);
     /* HW revision — always report compile-time constant (3 bytes: major.minor.patch).
      * Uses 2 registers (32-bit) so all three bytes are visible over Modbus.
      * Register layout from 0x0A onward shifted by 1 vs. the old 16-bit layout. */
@@ -305,6 +306,18 @@ nmbs_error fw_proto_read_input_regs(uint16_t addr, uint16_t qty,
     u32_to_regs(s_meta->image_crc32,          &ir[0x13]); /* was 0x12 */
     ir[0x15] = s_cmd_status;                              /* was 0x14 */
     ir[0x16] = s_meta->staging_valid;                     /* was 0x15 */
+    /* Installed application product_id, read straight from its fw_header_t
+     * (ground truth). 0 when no valid application is present. */
+    {
+        uint32_t app_pid = 0u;
+        if (s_meta->app_valid) {
+            fw_header_t hdr;
+            if (app_read_header(APP_FLASH_BASE, &hdr)) {
+                app_pid = hdr.product_id;
+            }
+        }
+        u32_to_regs(app_pid, &ir[0x17]);                  /* ir[0x17-0x18] */
+    }
 
     if (addr + qty > 0x20u) {
         return NMBS_EXCEPTION_ILLEGAL_DATA_ADDRESS;

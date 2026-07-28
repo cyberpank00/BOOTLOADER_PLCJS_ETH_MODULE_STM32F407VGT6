@@ -57,8 +57,8 @@ Ethernet bootloader для модуля PLCJS 12-DI на базе `STM32F407VGT6
 
 | Константа | Значение | CMake-флаг |
 |---|---|---|
-| `PRODUCT_ID_DEFAULT` | `0x12D1D4A0` | `-DPRODUCT_ID=0x...` |
-| `HW_REVISION_DEFAULT` | `1` | `-DHW_REVISION=N` |
+| `PRODUCT_ID_DEFAULT` | `0x504C1201` | `-DPRODUCT_ID=0x...` |
+| `HW_REVISION_DEFAULT` | `0x010101` | `-DHW_REVISION=0x...` |
 | `BOOTLOADER_VERSION` | `1.2` | — |
 | `FW_MAX_BLOCK_SIZE` | `240` байт | — |
 
@@ -257,30 +257,67 @@ ninja -C build
 
 ## Сборка для вариантов модулей
 
-`PRODUCT_ID_DEFAULT` и `HW_REVISION_DEFAULT` защищены `#ifndef` в `Application/flash/flash_map.h`
-и переопределяются через CMake:
+Прошивка загрузчика **идентична для всех типов плат** — у всех общее ядро
+(Ethernet PHY + статусный LED на PC8), а различающаяся секция ввода-вывода
+загрузчиком не используется. Варианты отличаются **только** двумя
+compile-time константами идентификации:
 
-```bash
-# 12 дискретных входа / 4 выхода (дефолт)
-cmake -S . -B build/12di -DPRODUCT_ID=0x12D1D4A0 -DHW_REVISION=1
+- `PRODUCT_ID` — уникален для типа платы (OTA требует точного совпадения)
+- `HW_REVISION` — ревизия платы, `(major << 16) | (minor << 8) | patch`
+  (OTA сравнивает **только** байт major)
 
-# 12 дискретных выхода
-cmake -S . -B build/12do -DPRODUCT_ID=0x12D00000 -DHW_REVISION=1
+Обе защищены `#ifndef` в `Application/flash/flash_map.h`: обычная сборка
+использует дефолты, а `-DPRODUCT_ID` / `-DHW_REVISION` переопределяют их для
+конкретного варианта.
 
-# 4 входа RTD
-cmake -S . -B build/4rtd -DPRODUCT_ID=0x04D00000 -DHW_REVISION=1
+### Схема PRODUCT_ID
 
-# 8 аналоговых входов
-cmake -S . -B build/8ai -DPRODUCT_ID=0x08A10000 -DHW_REVISION=1
+`0x504C_CCTT` — `0x504C` = ASCII `"PL"` (маркер семейства PLCJS),
+`CC` = число каналов (BCD), `TT` = код типа ввода-вывода.
 
-# 8 аналоговых выходов
-cmake -S . -B build/8ao -DPRODUCT_ID=0x08A00000 -DHW_REVISION=1
+| Вариант | Каналы | Тип I/O | PRODUCT_ID | HW_REVISION |
+|---------|--------|---------|------------|-------------|
+| `12di`  | 12 | Дискр. вход    (01) | `0x504C1201` | `0x010101` |
+| `12do`  | 12 | Дискр. выход   (02) | `0x504C1202` | `0x010101` |
+| `4rtd`  | 4  | RTD температура (03) | `0x504C0403` | `0x010101` |
+| `4aic`  | 4  | Анал. вход ток  (04) | `0x504C0404` | `0x010101` |
+| `4aiv`  | 4  | Анал. вход напр.(05) | `0x504C0405` | `0x010101` |
+| `4ao`   | 4  | Анал. выход     (06) | `0x504C0406` | `0x010101` |
+
+Таблица хранится в [`scripts/variants.csv`](scripts/variants.csv) — это единый
+источник правды. Новая плата = одна новая строка.
+
+### Сборка всех вариантов (рекомендуется)
+
+```powershell
+# Собрать все варианты в dist/ (BOOTLOADER_PLCJS_<name>_hw<MM.mm.pp>.hex)
+./scripts/build_all.ps1
+
+# Только один вариант
+./scripts/build_all.ps1 -Variant 4rtd
+
+# С чистой сборкой (очистить build-папки), Debug
+./scripts/build_all.ps1 -Clean -Config Debug
 ```
 
-Каждый результирующий `BOOTLOADER_PLCJS.bin` будет принимать OTA-образы
-только с совпадающими `fw_header_t.product_id` и `hw_revision`.
-Загрузка прошивки для неподходящего модуля отклоняется
-при `FINALIZE_UPDATE` — до записи в область приложения.
+Каждый вариант конфигурируется в свою папку `build/<name>-<config>`
+(изолированный CMake-кеш — константы не «протекают» между вариантами),
+результат `.hex` / `.bin` копируется в `dist/` с понятным именем.
+
+### Ручная сборка одного варианта
+
+```bash
+cmake -S . -B build/4rtd -G Ninja \
+      -DCMAKE_TOOLCHAIN_FILE=arm-none-eabi-toolchain.cmake \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DPRODUCT_ID=0x504C0403 -DHW_REVISION=0x010101
+cmake --build build/4rtd
+```
+
+Каждый результирующий `BOOTLOADER_PLCJS.bin` принимает OTA-образы только с
+точно совпадающим `fw_header_t.product_id` и совпадающим байтом major в
+`hw_revision`. Прошивка для неподходящего модуля отклоняется при
+`FINALIZE_UPDATE` — до записи в область приложения.
 
 ## Заголовок прошивки
 

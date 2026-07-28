@@ -56,8 +56,8 @@ Identity constants (defaults for the 12-DI/D4MG variant, CMake-configurable):
 
 | Constant | Default | CMake flag |
 |---|---|---|
-| `PRODUCT_ID_DEFAULT` | `0x12D1D4A0` | `-DPRODUCT_ID=0x...` |
-| `HW_REVISION_DEFAULT` | `1` | `-DHW_REVISION=N` |
+| `PRODUCT_ID_DEFAULT` | `0x504C1201` | `-DPRODUCT_ID=0x...` |
+| `HW_REVISION_DEFAULT` | `0x010101` | `-DHW_REVISION=0x...` |
 | `BOOTLOADER_VERSION` | `1.2` | — |
 | `FW_MAX_BLOCK_SIZE` | `240` bytes | — |
 
@@ -256,31 +256,66 @@ Outputs:
 
 ## Building for module variants
 
-`PRODUCT_ID_DEFAULT` and `HW_REVISION_DEFAULT` are guarded with `#ifndef` in
-`Application/flash/flash_map.h` so they can be overridden at build time.
+The bootloader firmware is **identical for every board type** — all variants
+share the same MCU core (Ethernet PHY + status LED on PC8), and the differing
+I/O section is not touched by the bootloader. Variants differ *only* in two
+compile-time identity constants:
 
-Pass `-DPRODUCT_ID` and `-DHW_REVISION` to CMake to target a different module:
+- `PRODUCT_ID` — unique per board type (OTA requires an exact match)
+- `HW_REVISION` — PCB revision, `(major << 16) | (minor << 8) | patch`
+  (OTA compares the **major** byte only)
 
-```bash
-# 12 Digital Inputs / 4 Digital Outputs (default)
-cmake -S . -B build/12di -DPRODUCT_ID=0x12D1D4A0 -DHW_REVISION=1
+Both are guarded with `#ifndef` in `Application/flash/flash_map.h`, so a plain
+`cmake` build uses the defaults, while `-DPRODUCT_ID` / `-DHW_REVISION`
+override them for a specific variant.
 
-# 12 Digital Outputs
-cmake -S . -B build/12do -DPRODUCT_ID=0x12D00000 -DHW_REVISION=1
+### PRODUCT_ID scheme
 
-# 4 RTD inputs
-cmake -S . -B build/4rtd -DPRODUCT_ID=0x04D00000 -DHW_REVISION=1
+`0x504C_CCTT` — `0x504C` = ASCII `"PL"` (PLCJS family marker), `CC` = channel
+count (BCD), `TT` = I/O type code.
 
-# 8 Analog Inputs
-cmake -S . -B build/8ai -DPRODUCT_ID=0x08A10000 -DHW_REVISION=1
+| Variant | Channels | I/O type | PRODUCT_ID | HW_REVISION |
+|---------|----------|----------|------------|-------------|
+| `12di`  | 12 | Digital Input   (01) | `0x504C1201` | `0x010101` |
+| `12do`  | 12 | Digital Output  (02) | `0x504C1202` | `0x010101` |
+| `4rtd`  | 4  | RTD temperature (03) | `0x504C0403` | `0x010101` |
+| `4aic`  | 4  | Analog In current (04) | `0x504C0404` | `0x010101` |
+| `4aiv`  | 4  | Analog In voltage (05) | `0x504C0405` | `0x010101` |
+| `4ao`   | 4  | Analog Output   (06) | `0x504C0406` | `0x010101` |
 
-# 8 Analog Outputs
-cmake -S . -B build/8ao -DPRODUCT_ID=0x08A00000 -DHW_REVISION=1
+The table lives in [`scripts/variants.csv`](scripts/variants.csv) and is the
+single source of truth. Add a new board = add one row.
+
+### Build all variants (recommended)
+
+```powershell
+# Build every variant into dist/ (BOOTLOADER_PLCJS_<name>_hw<MM.mm.pp>.hex)
+./scripts/build_all.ps1
+
+# One variant only
+./scripts/build_all.ps1 -Variant 4rtd
+
+# Fresh (wipe each build dir first), Debug build
+./scripts/build_all.ps1 -Clean -Config Debug
 ```
 
-Each resulting `BOOTLOADER_PLCJS.bin` will only accept OTA images whose
-`fw_header_t.product_id` and `fw_header_t.hw_revision` match the compiled-in
-values.  Flashing firmware for the wrong module variant is rejected at
+Each variant is configured into its own `build/<name>-<config>` directory (an
+isolated CMake cache, so the identity constants never leak between variants),
+and the resulting `.hex` / `.bin` are copied to `dist/` with a descriptive name.
+
+### Build a single variant manually
+
+```bash
+cmake -S . -B build/4rtd -G Ninja \
+      -DCMAKE_TOOLCHAIN_FILE=arm-none-eabi-toolchain.cmake \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DPRODUCT_ID=0x504C0403 -DHW_REVISION=0x010101
+cmake --build build/4rtd
+```
+
+Each resulting `BOOTLOADER_PLCJS.bin` only accepts OTA images whose
+`fw_header_t.product_id` matches exactly and whose `hw_revision` major byte
+matches. Firmware for the wrong module variant is rejected at
 `FINALIZE_UPDATE` before anything is written to the application region.
 
 ## Firmware header

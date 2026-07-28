@@ -79,7 +79,7 @@
  * OTA acceptance: product_id exact match + (hw_rev >> 16) == (HW_REVISION_DEFAULT >> 16)
  *   (major byte only; minor/patch variants are always firmware-compatible) */
 #ifndef PRODUCT_ID_DEFAULT
-#define PRODUCT_ID_DEFAULT      0x12D1D4A0u
+#define PRODUCT_ID_DEFAULT      0x504C1201u  /* "PL" + 12 ch + DI(01) — 12di */
 #endif
 #ifndef HW_REVISION_DEFAULT
 #define HW_REVISION_DEFAULT     0x010101u  /* hw:01.01.01 */

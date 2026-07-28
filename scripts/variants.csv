@@ -1,0 +1,7 @@
+name,product_id,hw_revision,description
+12di,0x504C1201,0x010101,12x Digital Input
+12do,0x504C1202,0x010101,12x Digital Output
+4rtd,0x504C0403,0x010101,4x RTD temperature input
+4aic,0x504C0404,0x010101,4x Analog Input (current)
+4aiv,0x504C0405,0x010101,4x Analog Input (voltage)
+4ao,0x504C0406,0x010101,4x Analog Output

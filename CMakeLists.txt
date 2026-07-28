@@ -28,7 +28,7 @@ add_executable(${CMAKE_PROJECT_NAME})
 #   patch — cosmetic only (tracks, holes, silkscreen, etc.)
 #   e.g. hw:01.02.03 = 0x010203
 # OTA validation: product_id exact match + major byte match only.
-set(PRODUCT_ID   "0x12D1D4A0" CACHE STRING "Product ID for this module variant")
+set(PRODUCT_ID   "0x504C1201" CACHE STRING "Product ID for this module variant (0x504C=PL family; see scripts/variants.csv)")
 set(HW_REVISION  "0x010101"   CACHE STRING "HW revision (major<<16|minor<<8|patch), e.g. hw:01.01.01 = 0x010101")
 
 # ---------- Compile definitions ------------------------------------------

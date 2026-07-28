@@ -58,7 +58,7 @@ Identity constants (defaults for the 12-DI/D4MG variant, CMake-configurable):
 |---|---|---|
 | `PRODUCT_ID_DEFAULT` | `0x12D1D4A0` | `-DPRODUCT_ID=0x...` |
 | `HW_REVISION_DEFAULT` | `1` | `-DHW_REVISION=N` |
-| `BOOTLOADER_VERSION` | `1.0.0` | — |
+| `BOOTLOADER_VERSION` | `1.2` | — |
 | `FW_MAX_BLOCK_SIZE` | `240` bytes | — |
 
 ## Network configuration

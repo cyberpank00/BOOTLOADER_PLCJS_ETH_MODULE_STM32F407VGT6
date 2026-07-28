@@ -68,18 +68,24 @@
 
 /* PRODUCT_ID_DEFAULT and HW_REVISION_DEFAULT can be overridden at build time
  * by passing -DPRODUCT_ID_DEFAULT=<val> and -DHW_REVISION_DEFAULT=<val> to
- * the compiler (e.g. via CMake: -DPRODUCT_ID=0x12D1D4A0 -DHW_REVISION=0x0101).
+ * the compiler (e.g. via CMake: -DPRODUCT_ID=0x12D1D4A0 -DHW_REVISION=0x010101).
  *
- * HW_REVISION encoding: (major << 8) | minor
- *   e.g. hw:01.02 → 0x0102
- * OTA acceptance checks product_id exactly and hw_revision major byte only. */
+ * HW_REVISION encoding: (major << 16) | (minor << 8) | patch
+ *   major — full board rework / MCU pinout change  → FW major must match
+ *   minor — non-pinout component / schematic change → FW-compatible
+ *   patch — cosmetic change (tracks, holes, silkscreen, etc.)
+ *   e.g. hw:01.02.03 → 0x010203
+ *
+ * OTA acceptance: product_id exact match + (hw_rev >> 16) == (HW_REVISION_DEFAULT >> 16)
+ *   (major byte only; minor/patch variants are always firmware-compatible) */
 #ifndef PRODUCT_ID_DEFAULT
 #define PRODUCT_ID_DEFAULT      0x12D1D4A0u
 #endif
 #ifndef HW_REVISION_DEFAULT
-#define HW_REVISION_DEFAULT     0x0101u  /* hw:01.01 */
+#define HW_REVISION_DEFAULT     0x010101u  /* hw:01.01.01 */
 #endif
-#define BOOTLOADER_VERSION      0x00010000u  /* 1.0.0 */
+/* BL version encoding: (major << 8) | minor  — mirrors fw_version in fw_header_t */
+#define BOOTLOADER_VERSION      0x00000102u  /* 1.2 */
 
 /* Maximum firmware block size for Modbus transfer (bytes). */
 #define FW_MAX_BLOCK_SIZE       240u

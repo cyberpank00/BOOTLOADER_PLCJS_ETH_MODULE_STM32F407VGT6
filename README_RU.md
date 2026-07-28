@@ -59,7 +59,7 @@ Ethernet bootloader для модуля PLCJS 12-DI на базе `STM32F407VGT6
 |---|---|---|
 | `PRODUCT_ID_DEFAULT` | `0x12D1D4A0` | `-DPRODUCT_ID=0x...` |
 | `HW_REVISION_DEFAULT` | `1` | `-DHW_REVISION=N` |
-| `BOOTLOADER_VERSION` | `1.0.0` | — |
+| `BOOTLOADER_VERSION` | `1.2` | — |
 | `FW_MAX_BLOCK_SIZE` | `240` байт | — |
 
 ## Сетевая конфигурация

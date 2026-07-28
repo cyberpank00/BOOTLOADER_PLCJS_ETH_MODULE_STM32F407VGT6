@@ -67,6 +67,7 @@ static void exec_begin_update(void)
     uint32_t image_crc   = regs_to_u32(&s_params[0x12]);
     uint32_t fw_ver      = regs_to_u32(&s_params[0x14]);
     uint32_t product_id  = regs_to_u32(&s_params[0x16]);
+    /* hw_rev is sent as (major << 8) | minor (uint16); patch is cosmetic — not sent. */
     uint16_t hw_rev      = s_params[0x18];
     uint16_t block_size  = s_params[0x19];
     uint32_t block_count = regs_to_u32(&s_params[0x1A]);
@@ -76,7 +77,9 @@ static void exec_begin_update(void)
         s_cmd_status = CMD_STATUS_ERROR;
         return;
     }
-    if (hw_rev != HW_REVISION_DEFAULT) {
+    /* Accept any minor/patch variant of the same major revision.
+     * hw_rev top byte = major sent; HW_REVISION_DEFAULT >> 16 = major expected. */
+    if ((hw_rev >> 8u) != (HW_REVISION_DEFAULT >> 16u)) {
         s_meta->last_error = BOOT_ERR_HW_REV_MISMATCH;
         s_cmd_status = CMD_STATUS_ERROR;
         return;
@@ -278,17 +281,30 @@ nmbs_error fw_proto_read_input_regs(uint16_t addr, uint16_t qty,
     u32_to_regs(BOOTLOADER_VERSION,         &ir[0x02]);
     ir[0x04] = (uint16_t)s_meta->boot_state;
     ir[0x05] = s_meta->app_valid;
-    u32_to_regs(s_meta->app_fw_version,     &ir[0x06]);
+    /* Read app version directly from the installed fw_header_t (ground truth).
+     * Fall back to metadata if the header is unreadable; report 0 when no app. */
+    {
+        uint32_t app_ver = 0u;
+        if (s_meta->app_valid) {
+            fw_header_t hdr;
+            app_ver = app_read_header(APP_FLASH_BASE, &hdr)
+                      ? hdr.fw_version : s_meta->app_fw_version;
+        }
+        u32_to_regs(app_ver, &ir[0x06]);
+    }
     u32_to_regs(s_meta->product_id ? s_meta->product_id : PRODUCT_ID_DEFAULT,
                 &ir[0x08]);
-    ir[0x0A] = s_meta->hw_revision ? s_meta->hw_revision : HW_REVISION_DEFAULT;
-    ir[0x0B] = (uint16_t)s_meta->last_error;
-    u32_to_regs(s_meta->block_count,        &ir[0x0C]);
-    u32_to_regs(s_meta->received_block_count, &ir[0x0E]);
-    u32_to_regs(s_meta->image_size,         &ir[0x10]);
-    u32_to_regs(s_meta->image_crc32,        &ir[0x12]);
-    ir[0x14] = s_cmd_status;
-    ir[0x15] = s_meta->staging_valid;
+    /* HW revision — always report compile-time constant (3 bytes: major.minor.patch).
+     * Uses 2 registers (32-bit) so all three bytes are visible over Modbus.
+     * Register layout from 0x0A onward shifted by 1 vs. the old 16-bit layout. */
+    u32_to_regs(HW_REVISION_DEFAULT,          &ir[0x0A]); /* ir[0x0A-0B] */
+    ir[0x0C] = (uint16_t)s_meta->last_error;              /* was 0x0B */
+    u32_to_regs(s_meta->block_count,          &ir[0x0D]); /* was 0x0C */
+    u32_to_regs(s_meta->received_block_count, &ir[0x0F]); /* was 0x0E */
+    u32_to_regs(s_meta->image_size,           &ir[0x11]); /* was 0x10 */
+    u32_to_regs(s_meta->image_crc32,          &ir[0x13]); /* was 0x12 */
+    ir[0x15] = s_cmd_status;                              /* was 0x14 */
+    ir[0x16] = s_meta->staging_valid;                     /* was 0x15 */
 
     if (addr + qty > 0x20u) {
         return NMBS_EXCEPTION_ILLEGAL_DATA_ADDRESS;

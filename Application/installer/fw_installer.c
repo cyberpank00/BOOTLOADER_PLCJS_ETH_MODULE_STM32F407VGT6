@@ -84,7 +84,12 @@ installer_state_t fw_installer_poll(metadata_t *meta)
         meta->install_requested   = 0u;
         meta->install_in_progress = 0u;
         meta->staging_valid       = 0u;
-        meta->app_fw_version      = meta->fw_version;
+        /* Read version from the installed image header (ground truth). */
+        {
+            fw_header_t hdr;
+            meta->app_fw_version = app_read_header(APP_FLASH_BASE, &hdr)
+                                   ? hdr.fw_version : meta->fw_version;
+        }
         meta->app_image_size      = meta->image_size;
         meta->app_image_crc32     = meta->image_crc32;
         meta->boot_state          = (uint32_t)BOOT_READY_TO_BOOT;

@@ -103,6 +103,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Application/modbus/fw_update_proto.c
     Application/installer/fw_installer.c
     Application/net_id/net_id.c
+    Application/net_id/netbiosns.c
     Application/third_party/nanomodbus/nanomodbus.c
 )
 

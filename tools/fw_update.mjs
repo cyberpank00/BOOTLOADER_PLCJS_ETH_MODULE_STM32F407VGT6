@@ -20,8 +20,8 @@
  *
  * Options:
  *   --ip <addr>        Bootloader IP        (alias for --boot-ip)
- *   --boot-ip <addr>   Bootloader IP        (default 192.168.142.99)
- *   --app-ip <addr>    Application IP       (default 192.168.142.98)
+ *   --boot-ip <addr>   Bootloader IP        (default 192.168.1.2)
+ *   --app-ip <addr>    Application IP       (default 192.168.1.10)
  *   --port <n>         Modbus TCP port      (default 502)
  *   --version <hex>    FW version 0xMMmmpp  (default 0x00010000), for `update`
  */
@@ -33,8 +33,8 @@ import process from 'node:process';
 // ---------------------------------------------------------------------------
 // Target configuration
 // ---------------------------------------------------------------------------
-const BOOTLOADER_TARGET_IP = '192.168.142.99';
-const APP_TARGET_IP = '192.168.142.98';
+const BOOTLOADER_TARGET_IP = '192.168.1.2';
+const APP_TARGET_IP = '192.168.1.10';
 const TARGET_PORT = 502;
 const UNIT_ID = 1;
 

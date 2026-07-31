@@ -5,9 +5,12 @@
 
 #include "led_indication.h"
 #include "stm32f4xx_hal.h"
+#include "main.h"
 
-#define LED_PORT    GPIOC
-#define LED_PIN     GPIO_PIN_8
+/* Per-variant STAT_LED pin/port (see main.h). On 12DO this is PE9; on 12DI/4RTD
+ * it is PC8. Must never be a DQ output pin. */
+#define LED_PORT    STAT_LED_GPIO_Port
+#define LED_PIN     STAT_LED_Pin
 
 static led_pattern_t s_pattern = LED_PATTERN_OFF;
 static uint32_t      s_last_toggle;

@@ -15,6 +15,7 @@ void MX_GPIO_Init(void)
     __HAL_RCC_GPIOA_CLK_ENABLE();
     __HAL_RCC_GPIOB_CLK_ENABLE();
     __HAL_RCC_GPIOD_CLK_ENABLE();
+    __HAL_RCC_GPIOE_CLK_ENABLE();  /* STAT_LED/FACT_RES on PE for some variants (12DO) */
 
     /* ETHRST (PD11) — output, assert reset low first */
     HAL_GPIO_WritePin(ETHRST_GPIO_Port, ETHRST_Pin, GPIO_PIN_RESET);
@@ -31,7 +32,7 @@ void MX_GPIO_Init(void)
     HAL_GPIO_WritePin(ETHRST_GPIO_Port, ETHRST_Pin, GPIO_PIN_SET);
     HAL_Delay(100);
 
-    /* STAT_LED (PC8) — output */
+    /* STAT_LED (per-variant: PC8 on 12DI/4RTD, PE9 on 12DO) — output */
     HAL_GPIO_WritePin(STAT_LED_GPIO_Port, STAT_LED_Pin, GPIO_PIN_RESET);
     gi.Pin   = STAT_LED_Pin;
     gi.Mode  = GPIO_MODE_OUTPUT_PP;
@@ -39,7 +40,9 @@ void MX_GPIO_Init(void)
     gi.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(STAT_LED_GPIO_Port, &gi);
 
-    /* FACT_RES / service button (PC6) — input with pull-up */
+    /* FACT_RES / service button (per-variant: PC6 on 12DI/4RTD, PE10 on 12DO)
+     * — input with pull-up. The bootloader does not read it; configured only
+     * to a defined state (and to avoid leaving the correct pin floating). */
     gi.Pin  = FACT_RES_Pin;
     gi.Mode = GPIO_MODE_INPUT;
     gi.Pull = GPIO_PULLUP;

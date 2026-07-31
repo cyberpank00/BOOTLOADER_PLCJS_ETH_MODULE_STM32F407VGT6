@@ -56,9 +56,9 @@ void MX_LWIP_Init(void)
 
     lwip_init();
 
-    IP4_ADDR(&ipaddr,  192, 168, 142, 99);
+    IP4_ADDR(&ipaddr,  192, 168, 1, 2);
     IP4_ADDR(&netmask, 255, 255, 255, 0);
-    IP4_ADDR(&gw,      192, 168, 142, 1);
+    IP4_ADDR(&gw,      192, 168, 1, 1);
 
     netif_add(&gnetif, &ipaddr, &netmask, &gw, NULL,
               &ethernetif_init, &ethernet_input);

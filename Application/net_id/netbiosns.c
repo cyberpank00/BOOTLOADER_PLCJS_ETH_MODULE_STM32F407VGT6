@@ -19,6 +19,8 @@
 #include "lwip/def.h"
 #include "lwip/pbuf.h"
 
+#include "net_id.h"
+
 #include <string.h>
 
 #define NETBIOS_PORT        137u
@@ -31,6 +33,14 @@
 #define NB_FLAG_AUTHORATIVE 0x0400u
 /* Name flags (answer) */
 #define NB_NFLAG_UNIQUE     0x8000u
+
+/* Question / RR types */
+#define NB_TYPE_NB          0x0020u   /* name query (name -> IP)     */
+#define NB_TYPE_NBSTAT      0x0021u   /* node status (report names)  */
+#define NB_CLASS_IN         0x0001u
+
+/* Node-status NAME_FLAGS: unique, B-node, active. */
+#define NB_STAT_NAME_FLAGS  0x0400u
 
 typedef struct __attribute__((packed)) {
     uint16_t trans_id;
@@ -120,6 +130,58 @@ static void nb_send_response(struct udp_pcb* pcb, const ip_addr_t* addr, u16_t p
     pbuf_free(r);
 }
 
+/* Write a 16-byte NetBIOS name (15 chars space-padded + suffix) at dst. */
+static void nb_write_nbname(uint8_t* dst, const char* name, uint8_t suffix)
+{
+    memset(dst, ' ', 15);
+    for (unsigned i = 0; i < 15u && name[i] != '\0'; i++) { dst[i] = (uint8_t)name[i]; }
+    dst[15] = suffix;
+}
+
+static void put16(uint8_t* p, uint16_t v) { const uint16_t n = lwip_htons(v); memcpy(p, &n, 2); }
+
+/* Respond to a NODE STATUS (NBSTAT) request with our name(s) so passive network
+ * scanners / managed switches display the device name. */
+static void nb_send_nbstat(struct udp_pcb* pcb, const ip_addr_t* addr, u16_t port,
+                           const uint8_t* buf /* received packet */)
+{
+    if (s_name[0] == '\0') { return; }
+
+    #define NB_STAT_NUM_NAMES 2u
+    const uint16_t rdlen = (uint16_t)(1u + (NB_STAT_NUM_NAMES * 18u) + 46u);
+    const uint16_t total = (uint16_t)(12u + 34u + 2u + 2u + 4u + 2u + rdlen);
+
+    struct pbuf* r = pbuf_alloc(PBUF_TRANSPORT, total, PBUF_RAM);
+    if (r == NULL) { return; }
+    uint8_t* b = (uint8_t*)r->payload;
+    memset(b, 0, total);
+
+    memcpy(b + 0, buf + 0, 2);                       /* echo trans_id      */
+    put16(b + 2, NB_FLAG_RESPONSE | NB_FLAG_OPCODE_QUERY | NB_FLAG_AUTHORATIVE);
+    put16(b + 6, 1);                                 /* answerRRs = 1      */
+    b[12] = 0x20;
+    memcpy(b + 13, buf + 13, 32);                    /* echo queried name  */
+    b[45] = 0x00;
+    put16(b + 46, NB_TYPE_NBSTAT);
+    put16(b + 48, NB_CLASS_IN);
+    /* ttl (b+50..53) = 0 */
+    put16(b + 54, rdlen);
+
+    uint8_t* rd = b + 56;
+    rd[0] = (uint8_t)NB_STAT_NUM_NAMES;
+    uint8_t* np = rd + 1;
+    nb_write_nbname(np, s_name, 0x00); put16(np + 16, NB_STAT_NAME_FLAGS); np += 18; /* <00> workstation */
+    nb_write_nbname(np, s_name, 0x20); put16(np + 16, NB_STAT_NAME_FLAGS); np += 18; /* <20> server      */
+
+    /* Statistics block (46 bytes): first 6 = MAC (unit ID), rest zero. */
+    uint8_t mac[6];
+    net_id_get_mac(mac);
+    memcpy(np, mac, 6);
+
+    udp_sendto(pcb, r, addr, port);
+    pbuf_free(r);
+}
+
 static void nb_recv(void* arg, struct udp_pcb* pcb, struct pbuf* p,
                     const ip_addr_t* addr, u16_t port)
 {
@@ -139,6 +201,15 @@ static void nb_recv(void* arg, struct udp_pcb* pcb, struct pbuf* p,
     if ((flags & NB_FLAG_OPCODE_MASK) != NB_FLAG_OPCODE_QUERY) { return; }
     if (lwip_ntohs(hdr->questions) < 1) { return; }
     if (q->name_size != 0x20u) { return; }
+
+    const u16_t qtype = lwip_ntohs(q->type);
+    if (qtype == NB_TYPE_NBSTAT) {
+        /* Node status: report our name(s) regardless of the queried name
+         * (scanners send the wildcard "*"). */
+        nb_send_nbstat(pcb, addr, port, buf);
+        return;
+    }
+    if (qtype != NB_TYPE_NB) { return; }
 
     char qname[NETBIOS_NAME_LEN];
     nb_decode(q->name, qname);

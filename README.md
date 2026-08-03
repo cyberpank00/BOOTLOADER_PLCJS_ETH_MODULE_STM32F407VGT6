@@ -70,9 +70,9 @@ Identity constants (defaults for the 12-DI/D4MG variant, CMake-configurable):
 
 The current bootloader network settings are hardcoded in `LWIP/App/lwip.c`:
 
-- IP: `192.168.142.99`
+- IP: `192.168.1.2`
 - netmask: `255.255.255.0`
-- gateway: `192.168.142.1`
+- gateway: `192.168.1.1`
 - Modbus TCP port: `502`
 - Modbus unit id: `1`
 
@@ -190,8 +190,8 @@ node tools/fw_update.mjs app-bootloader
 
 Default client parameters:
 
-- bootloader IP: `192.168.142.99`
-- application IP: `192.168.142.98`
+- bootloader IP: `192.168.1.2`
+- application IP: `192.168.1.10`
 - port: `502`
 - unit id: `1`
 
@@ -210,7 +210,7 @@ Example with `pymodbus`:
 ```python
 from pymodbus.client import ModbusTcpClient
 
-client = ModbusTcpClient("192.168.142.98", port=502, timeout=5)
+client = ModbusTcpClient("192.168.1.10", port=502, timeout=5)
 client.connect()
 client.write_register(address=118, value=0xB007, device_id=1)
 client.close()
@@ -218,8 +218,8 @@ client.close()
 
 In the validated setup:
 
-- main application responds on `192.168.142.98`
-- bootloader responds on `192.168.142.99`
+- main application responds on `192.168.1.10`
+- bootloader responds on `192.168.1.2`
 
 ## Recovery notes
 

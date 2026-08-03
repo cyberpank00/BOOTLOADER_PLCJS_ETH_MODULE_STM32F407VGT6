@@ -53,15 +53,19 @@ const IR_BOOT_STATE = 0x0004;
 const IR_APP_VALID = 0x0005;
 const IR_APP_VER_HI = 0x0006;
 const IR_PRODUCT_ID_HI = 0x0008;
-const IR_HW_REV = 0x000a;
-const IR_LAST_ERROR = 0x000b;
-const IR_BLOCK_COUNT_HI = 0x000c;
-const IR_RECV_BLOCKS_HI = 0x000e;
-const IR_IMAGE_SIZE_HI = 0x0010;
-const IR_IMAGE_CRC_HI = 0x0012;
-const IR_CMD_STATUS = 0x0014;
-const IR_STAGING_VALID = 0x0015;
-const IR_COUNT = 0x0016; // total registers to read
+// NOTE: HW revision is a 32-bit value (2 registers, 0x0A-0x0B) in the current
+// bootloader, so every field from last_error onward is shifted +1 vs. the old
+// 16-bit-hw layout. These offsets must match fw_proto_read_input_regs().
+const IR_HW_REV = 0x000a;         // 0x0A-0x0B (major.minor.patch)
+const IR_LAST_ERROR = 0x000c;
+const IR_BLOCK_COUNT_HI = 0x000d;
+const IR_RECV_BLOCKS_HI = 0x000f;
+const IR_IMAGE_SIZE_HI = 0x0011;
+const IR_IMAGE_CRC_HI = 0x0013;
+const IR_CMD_STATUS = 0x0015;
+const IR_STAGING_VALID = 0x0016;
+const IR_APP_PRODUCT_ID_HI = 0x0017; // installed app product_id (0x17-0x18)
+const IR_COUNT = 0x0019; // total registers to read (through 0x18)
 
 // ---------------------------------------------------------------------------
 // Holding Register map (FC03/FC16, base 0x0000) - read/write
@@ -551,6 +555,16 @@ async function cmdUpdate(args) {
       process.exit(1);
     }
 
+    // Use the bootloader's own product_id / hw_revision for the BEGIN_UPDATE
+    // pre-check (variant-agnostic — no hard-coded per-variant identity). The
+    // image's real identity is still validated against the bootloader from its
+    // embedded fw_header at FINALIZE, so a wrong-variant image is still caught.
+    const targetProdId = u32FromRegs(regs, IR_PRODUCT_ID_HI);
+    const hwRev32 = u32FromRegs(regs, IR_HW_REV);
+    const hwRevBegin = ((((hwRev32 >>> 16) & 0xff) << 8) | ((hwRev32 >>> 8) & 0xff)) >>> 0;
+    console.log(`Target:      product_id 0x${targetProdId.toString(16).toUpperCase().padStart(8, '0')}, hw ${(hwRev32 >>> 16) & 0xff}.${(hwRev32 >>> 8) & 0xff}`);
+    console.log('');
+
     // ---- BEGIN_UPDATE ----------------------------------------------------
     console.log('Step 1/4  BEGIN_UPDATE (erasing staging...)');
     // Parameter block starts at HR[0x0010]: image_size(2), crc32(2), fw_ver(2),
@@ -562,9 +576,9 @@ async function cmdUpdate(args) {
       imageCrc & 0xffff,
       (fwVersion >>> 16) & 0xffff,
       fwVersion & 0xffff,
-      (PRODUCT_ID_DEFAULT >>> 16) & 0xffff,
-      PRODUCT_ID_DEFAULT & 0xffff,
-      HW_REVISION_DEFAULT,
+      (targetProdId >>> 16) & 0xffff,
+      targetProdId & 0xffff,
+      hwRevBegin,
       blockSize,
       (blockCount >>> 16) & 0xffff,
       blockCount & 0xffff,

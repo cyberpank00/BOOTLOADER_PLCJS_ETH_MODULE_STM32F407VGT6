@@ -15,6 +15,7 @@
 
 static installer_state_t s_state;
 static uint32_t          s_offset;
+static uint32_t          s_erase_idx;
 
 void fw_installer_start(metadata_t *meta)
 {
@@ -22,22 +23,29 @@ void fw_installer_start(metadata_t *meta)
     meta->app_valid           = 0u;
     metadata_save(meta);
 
-    s_state  = INST_ERASING;
-    s_offset = 0u;
+    s_state     = INST_ERASING;
+    s_offset    = 0u;
+    s_erase_idx = 0u;
 }
 
 installer_state_t fw_installer_poll(metadata_t *meta)
 {
     switch (s_state) {
     case INST_ERASING: {
+        /* Erase one app sector per poll so the super-loop can service the
+         * network between sectors (a 2-sector erase in one call blocks ~3-4 s
+         * and would time out the updater's status poll). */
         uint32_t count = APP_LAST_SECTOR - APP_FIRST_SECTOR + 1u;
-        if (!flash_if_erase_sectors(APP_FIRST_SECTOR, count)) {
+        if (!flash_if_erase_sectors(APP_FIRST_SECTOR + s_erase_idx, 1u)) {
             meta->last_error = BOOT_ERR_FLASH_ERASE;
             s_state = INST_ERROR;
             break;
         }
-        s_state  = INST_COPYING;
-        s_offset = 0u;
+        s_erase_idx++;
+        if (s_erase_idx >= count) {
+            s_state  = INST_COPYING;
+            s_offset = 0u;
+        }
         break;
     }
 

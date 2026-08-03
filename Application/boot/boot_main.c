@@ -124,6 +124,12 @@ static void sm_verify_staging(void)
 
 static void sm_install_fw(void)
 {
+    /* Keep the network serviced during the (chunked) install so the updater's
+     * status polls are answered. Otherwise the single-threaded server blacks
+     * out for the whole erase/copy and the client times out mid-INSTALL. */
+    ethernet_poll();
+    modbus_boot_server_poll();
+
     installer_state_t ist = fw_installer_poll(&s_meta);
 
     switch (ist) {
@@ -159,6 +165,17 @@ static void sm_verify_app(void)
     if (app_validate_full(APP_FLASH_BASE,
                           s_meta.app_image_size,
                           s_meta.app_image_crc32)) {
+        /* Install succeeded. Keep servicing the network briefly so the updater
+         * can read the final CMD_STATUS_OK before we tear down LwIP and jump to
+         * the application (otherwise the client's poll sees the connection reset
+         * by the jump — ECONNRESET). This path is only reached right after an
+         * install; the normal power-on boot goes straight to READY_TO_BOOT. */
+        uint32_t t0 = HAL_GetTick();
+        while ((HAL_GetTick() - t0) < 2000u) {
+            led_indication_poll(HAL_GetTick());
+            ethernet_poll();
+            modbus_boot_server_poll();
+        }
         s_state = BOOT_READY_TO_BOOT;
     } else {
         s_meta.app_valid   = 0u;

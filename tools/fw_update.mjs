@@ -27,6 +27,7 @@
  */
 
 import net from 'node:net';
+import dgram from 'node:dgram';
 import { readFile } from 'node:fs/promises';
 import process from 'node:process';
 
@@ -355,9 +356,175 @@ async function waitForStatus(c, expected, timeoutS = 30) {
   return false;
 }
 
+// ---------------------------------------------------------------------------
+// PLCJS Discovery Protocol (PDP) — UDP/20556 broadcast.
+// The bootloader (like the applications) now defaults to an AutoIP link-local
+// address (169.254.mac[4].mac[5]) instead of a fixed IP, so it is located by
+// MAC via broadcast IDENTIFY. Mirrors Application/discovery/discovery.c.
+// NOTE: the responses are UDP broadcast — the host firewall must allow inbound
+// UDP:20556 or discovery finds nothing.
+// ---------------------------------------------------------------------------
+const PDP_PORT = 20556;
+const PDP_VER = 1;
+const PDP_RESP = 0x80;
+const PDP_OP_IDENTIFY = 0x01;
+
+function pdpBuildIdentify(txid) {
+  const b = Buffer.alloc(16);
+  b.write('PLCD', 0, 'ascii');
+  b[4] = PDP_VER;
+  b[5] = PDP_OP_IDENTIFY;
+  b.writeUInt16BE(txid & 0xffff, 6);
+  return b; // target_mac[6] = 0 (broadcast), len = 0
+}
+
+function pdpParseIdentify(buf) {
+  if (buf.length < 16 || buf.toString('ascii', 0, 4) !== 'PLCD') return null;
+  const opcode = buf[5];
+  if (opcode !== (PDP_OP_IDENTIFY | PDP_RESP)) return null;
+  const p = buf.subarray(16);
+  if (p.length < 38) return null;
+  return {
+    mac: [...buf.subarray(8, 14)].map((x) => x.toString(16).padStart(2, '0')).join(':'),
+    productId: p.readUInt32BE(0),
+    fw: p.readUInt16BE(6),
+    netMode: p[8],
+    inBoot: p[9] !== 0,
+    ip: `${p[10]}.${p[11]}.${p[12]}.${p[13]}`,
+  };
+}
+
+/** Broadcast IDENTIFY from `nicIp` (null = OS default) and collect responders. */
+function pdpDiscover(nicIp, timeoutMs = 1500) {
+  return new Promise((resolve) => {
+    const found = new Map();
+    const rx = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+    rx.on('error', () => {});
+    rx.on('message', (msg) => {
+      const d = pdpParseIdentify(msg);
+      if (d) found.set(d.mac, d);
+    });
+    rx.bind(PDP_PORT, () => {
+      try { rx.setBroadcast(true); } catch {}
+      const tx = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+      tx.on('error', () => {});
+      const fire = () => {
+        try { tx.setBroadcast(true); } catch {}
+        tx.send(pdpBuildIdentify(0xF00D), PDP_PORT, '255.255.255.255');
+      };
+      if (nicIp) tx.bind(0, nicIp, fire); else tx.bind(0, fire);
+      setTimeout(() => {
+        try { tx.close(); } catch {}
+        try { rx.close(); } catch {}
+        resolve([...found.values()]);
+      }, timeoutMs);
+    });
+  });
+}
+
+/** Find the (link-local) bootloader by discovery, matching `mac` if given.
+ *  Returns the device object {mac, ip, ...} or null. */
+async function discoverBootloader(nicIp, mac, timeoutS = 15) {
+  const deadline = Date.now() + timeoutS * 1000;
+  while (Date.now() < deadline) {
+    const bl = (await pdpDiscover(nicIp, 1500)).filter((d) => d.inBoot && (!mac || d.mac === mac));
+    if (mac) { const m = bl.find((d) => d.mac === mac); if (m) return m; }
+    else if (bl.length === 1) return bl[0];
+    else if (bl.length > 1) {
+      console.log(`  Multiple bootloaders found (${bl.map((d) => d.mac).join(', ')}); pass --mac to disambiguate`);
+    }
+  }
+  return null;
+}
+
+/** True if a bootloader answers Modbus at ip:port (magic check). */
+async function isBootloaderReachable(ip, port) {
+  const c = new ModbusTcpClient(ip, port, UNIT_ID, 1000);
+  try {
+    await c.connect();
+    const regs = await readInputRegs(c);
+    return u32FromRegs(regs, IR_MAGIC_HI) === BOOTLOADER_MAGIC;
+  } catch { return false; } finally { c.close(); }
+}
+
+/** Broadcast a discovery SET_NET (static) to `mac`, re-sent for reliability. */
+function pdpSetNetStatic(nicIp, mac, ip, mask, gw) {
+  return new Promise((resolve) => {
+    const macB = Buffer.from(mac.split(':').map((h) => parseInt(h, 16)));
+    const oct = (s) => s.split('.').map((n) => parseInt(n, 10) & 0xff);
+    const payload = Buffer.from([0, ...oct(ip), ...oct(mask), ...oct(gw)]);
+    const f = Buffer.alloc(16 + payload.length);
+    f.write('PLCD', 0, 'ascii');
+    f[4] = PDP_VER; f[5] = 0x02; f.writeUInt16BE(0x5E70, 6);
+    macB.copy(f, 8); f.writeUInt16BE(payload.length, 14); payload.copy(f, 16);
+    const tx = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+    tx.on('error', () => {});
+    const done = () => { try { tx.close(); } catch {} resolve(); };
+    const fire = () => {
+      try { tx.setBroadcast(true); } catch {}
+      tx.send(f, PDP_PORT, '255.255.255.255');
+      setTimeout(() => { tx.send(f, PDP_PORT, '255.255.255.255'); setTimeout(done, 300); }, 300);
+    };
+    if (nicIp) tx.bind(0, nicIp, fire); else tx.bind(0, fire);
+  });
+}
+
+/** IDENTIFY the device currently at `ip`; return its MAC (or null). */
+async function pdpMacForIp(nicIp, ip, timeoutS = 4) {
+  const deadline = Date.now() + timeoutS * 1000;
+  while (Date.now() < deadline) {
+    const d = (await pdpDiscover(nicIp, 1500)).find((x) => x.ip === ip);
+    if (d) return d.mac;
+  }
+  return null;
+}
+
+/**
+ * Ensure args.ip / args.bootIp point at a reachable bootloader. If the
+ * configured IP does not answer as a bootloader, discover the link-local one
+ * by MAC (args.mac) and adopt its address.
+ */
+async function ensureBootloaderIp(args, timeoutS = 15) {
+  const desiredIp = args.ip;   // configured / --boot-ip target (default 192.168.1.2)
+
+  // 1) A bootloader already answering at the configured IP?
+  if (await isBootloaderReachable(args.ip, args.port)) return true;
+
+  // 2) Discover the (link-local) bootloader by MAC.
+  console.log(`  ${args.ip} did not answer as a bootloader; discovering via PDP (UDP/${PDP_PORT})...`);
+  const dev = await discoverBootloader(args.nic, args.mac, timeoutS);
+  if (!dev) return false;
+  console.log(`  Found bootloader ${dev.mac} at ${dev.ip}`);
+  args.mac = dev.mac;
+
+  // 3) Directly reachable from this host (same subnet)?
+  if (await isBootloaderReachable(dev.ip, args.port)) {
+    args.ip = dev.ip; args.bootIp = dev.ip;
+    return true;
+  }
+
+  // 4) Different subnet (link-local bootloader, host on another subnet):
+  //    reassign it live to the desired IP via discovery SET_NET, then use it.
+  const o = desiredIp.split('.');
+  const gw = `${o[0]}.${o[1]}.${o[2]}.1`;
+  console.log(`  ${dev.ip} not directly reachable; assigning ${desiredIp} via SET_NET...`);
+  await pdpSetNetStatic(args.nic, dev.mac, desiredIp, '255.255.255.0', gw);
+  const d2 = Date.now() + 8000;
+  while (Date.now() < d2) {
+    if (await isBootloaderReachable(desiredIp, args.port)) {
+      args.ip = desiredIp; args.bootIp = desiredIp;
+      return true;
+    }
+    await sleep(400);
+  }
+  return false;
+}
+
 /**
  * Wait until the bootloader becomes reachable and sits in BOOT_WAIT_COMMAND.
- * @param {{bootIp:string,port:number}} args
+ * Tries the configured IP over Modbus and, in parallel, discovers the
+ * link-local bootloader by MAC (adopting its address when found).
+ * @param {{bootIp:string,port:number,nic?:string,mac?:string}} args
  * @param {number} timeoutS
  */
 async function waitForBootloaderReady(args, timeoutS = 20) {
@@ -383,11 +550,20 @@ async function waitForBootloaderReady(args, timeoutS = 20) {
       c.close();
     }
 
-    await sleep(300);
+    /* The bootloader now defaults to link-local; discover it by MAC and adopt
+     * its address so the next probe (and the OTA that follows) can reach it. */
+    const dev = await discoverBootloader(args.nic, args.mac, 2);
+    if (dev && dev.ip !== args.bootIp) {
+      console.log(`  Discovered bootloader at ${dev.ip}`);
+      args.bootIp = dev.ip;
+      args.ip = dev.ip;
+    }
+
+    await sleep(200);
   }
 
   if (lastNotice) console.log(`  Last bootloader probe: ${lastNotice}`);
-  console.log(`  Timeout waiting for bootloader on ${args.bootIp}:${args.port}`);
+  console.log(`  Timeout waiting for bootloader (configured ${args.bootIp}:${args.port}, PDP discovery also failed)`);
   return false;
 }
 
@@ -493,10 +669,19 @@ async function cmdAppReboot(args) {
 
 /** @param {{appIp:string,port:number,bootIp:string}} args */
 async function cmdAppBootloader(args) {
+  // Learn the target MAC first (via discovery of the running app) so the
+  // link-local bootloader can be located after the reset. Best-effort: if it
+  // fails, discovery falls back to "the sole bootloader found".
+  if (!args.mac) {
+    args.mac = await pdpMacForIp(args.nic, args.appIp, 4);
+    if (args.mac) console.log(`Target MAC:     ${args.mac}`);
+  }
   await sendAppAction(args, APP_HR_TRIGGER, APP_CMD_BOOTLOADER, 'APP bootloader command');
   console.log('Application is switching to bootloader mode...');
 
-  if (await waitForBootloaderReady(args, 20)) {
+  // The bootloader defaults to link-local; discover it by MAC and, if it is on
+  // a different subnet than this host, reassign it live to the desired IP.
+  if (await ensureBootloaderIp(args, 25)) {
     console.log(`Bootloader is ready at ${args.bootIp}:${args.port}`);
     await cmdStatus({ ip: args.bootIp, port: args.port });
   } else {
@@ -649,6 +834,8 @@ function parseArgs(argv) {
     version: 0x00010000,
     command: null,
     firmware: null,
+    nic: null,   // local NIC IP to broadcast discovery from (multi-homed hosts)
+    mac: null,   // target MAC for discovery (auto-learned in app-bootloader)
   };
   const positional = [];
   for (let i = 0; i < argv.length; i++) {
@@ -658,6 +845,8 @@ function parseArgs(argv) {
       args.bootIp = args.ip;
     }
     else if (a === '--app-ip') args.appIp = argv[++i];
+    else if (a === '--nic') args.nic = argv[++i];
+    else if (a === '--mac') args.mac = (argv[++i] || '').toLowerCase();
     else if (a === '--port') args.port = parseInt(argv[++i], 10);
     else if (a === '--version') args.version = parseInt(argv[++i], 0) >>> 0;
     else if (a === '-h' || a === '--help') args.command = 'help';
@@ -719,6 +908,11 @@ async function main() {
       case 'update':
         if (!args.firmware) {
           console.log('ERROR: `update` requires a firmware .bin path');
+          process.exit(1);
+        }
+        // Bootloader defaults to link-local: resolve/discover its IP first.
+        if (!(await ensureBootloaderIp(args, 15))) {
+          console.log('ERROR: no bootloader found (configured IP silent and PDP discovery failed)');
           process.exit(1);
         }
         await cmdUpdate(args);

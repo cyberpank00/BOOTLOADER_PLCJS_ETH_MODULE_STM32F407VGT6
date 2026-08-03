@@ -16,6 +16,11 @@ static led_pattern_t s_pattern = LED_PATTERN_OFF;
 static uint32_t      s_last_toggle;
 static uint8_t       s_burst_count;
 
+/* Discovery "flash LED": rapid blink until this tick, overriding the pattern.
+ * 0 = inactive. */
+#define LED_IDENTIFY_HALF_MS   100u
+static uint32_t      s_identify_until;
+
 void led_indication_init(void)
 {
     s_pattern     = LED_PATTERN_OFF;
@@ -39,8 +44,36 @@ void led_indication_set(led_pattern_t pattern)
     }
 }
 
+void led_indication_signal_identify(uint32_t ms)
+{
+    s_identify_until = HAL_GetTick() + ms;
+    if (s_identify_until == 0u) { s_identify_until = 1u; } /* 0 = inactive */
+    s_last_toggle = HAL_GetTick();
+    HAL_GPIO_WritePin(LED_PORT, LED_PIN, GPIO_PIN_SET);
+}
+
 void led_indication_poll(uint32_t now_ms)
 {
+    /* Identify override: rapid blink for its bounded duration, then let the
+     * base pattern resume. */
+    if (s_identify_until != 0u) {
+        if ((int32_t)(now_ms - s_identify_until) >= 0) {
+            s_identify_until = 0u;
+            s_last_toggle    = now_ms;
+            s_burst_count    = 0u;
+            if (s_pattern == LED_PATTERN_ERROR) {
+                HAL_GPIO_WritePin(LED_PORT, LED_PIN, GPIO_PIN_SET);
+            } else if (s_pattern == LED_PATTERN_OFF) {
+                HAL_GPIO_WritePin(LED_PORT, LED_PIN, GPIO_PIN_RESET);
+            }
+            /* IDLE / RECEIVING / INSTALLING resume on subsequent polls. */
+        } else if ((now_ms - s_last_toggle) >= LED_IDENTIFY_HALF_MS) {
+            HAL_GPIO_TogglePin(LED_PORT, LED_PIN);
+            s_last_toggle = now_ms;
+        }
+        return;
+    }
+
     uint32_t elapsed = now_ms - s_last_toggle;
 
     switch (s_pattern) {

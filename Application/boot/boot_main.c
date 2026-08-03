@@ -15,6 +15,7 @@
 #include "modbus_boot_server.h"
 #include "fw_update_proto.h"
 #include "fw_installer.h"
+#include "discovery.h"
 
 #include "stm32f4xx_hal.h"
 #include "lwip.h"
@@ -61,6 +62,9 @@ static void sm_check_entry(void)
 
             MX_LWIP_Init();
             modbus_boot_server_init(&s_meta, 502u);
+            /* Discovery responder so a bootloader-mode device is found and
+             * addressed by MAC (IDENTIFY reports in_bootloader = 1). */
+            discovery_init();
         }
     } else {
         s_state = BOOT_READY_TO_BOOT;
@@ -217,6 +221,11 @@ void boot_run(void)
     for (;;) {
         uint32_t now = HAL_GetTick();
         led_indication_poll(now);
+
+        /* A discovery REBOOT command resets outside the UDP callback. */
+        if (discovery_take_pending_reboot()) {
+            HAL_NVIC_SystemReset();
+        }
 
         switch (s_state) {
         case BOOT_START:          sm_start();          break;

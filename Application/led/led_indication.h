@@ -30,6 +30,13 @@ void led_indication_init(void);
 void led_indication_set(led_pattern_t pattern);
 void led_indication_poll(uint32_t now_ms);
 
+/**
+ * Blink the STAT_LED rapidly for @p ms milliseconds to physically locate the
+ * device (discovery "flash LED"). Overrides the current pattern for the
+ * duration, then the base pattern resumes on the next poll.
+ */
+void led_indication_signal_identify(uint32_t ms);
+
 #ifdef __cplusplus
 }
 #endif

@@ -56,9 +56,15 @@ void MX_LWIP_Init(void)
 
     lwip_init();
 
-    IP4_ADDR(&ipaddr,  192, 168, 1, 2);
-    IP4_ADDR(&netmask, 255, 255, 255, 0);
-    IP4_ADDR(&gw,      192, 168, 1, 1);
+    /* Factory / default addressing: AutoIP link-local (RFC 3927,
+     * 169.254.mac[4].mac[5]), matching the application's factory scheme so a
+     * bootloader-mode device sits on the same wire and is found by the
+     * discovery tool (which resolves the boot IP by MAC). */
+    uint8_t ll[4];
+    net_id_get_linklocal(ll);
+    IP4_ADDR(&ipaddr,  ll[0], ll[1], ll[2], ll[3]);
+    IP4_ADDR(&netmask, 255, 255, 0, 0);
+    ip4_addr_set_zero(&gw);
 
     netif_add(&gnetif, &ipaddr, &netmask, &gw, NULL,
               &ethernetif_init, &ethernet_input);

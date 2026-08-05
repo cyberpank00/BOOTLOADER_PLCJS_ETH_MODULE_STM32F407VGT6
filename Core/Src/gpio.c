@@ -17,20 +17,37 @@ void MX_GPIO_Init(void)
     __HAL_RCC_GPIOD_CLK_ENABLE();
     __HAL_RCC_GPIOE_CLK_ENABLE();  /* STAT_LED/FACT_RES on PE for some variants (12DO) */
 
-    /* ETHRST (PD11) — output, assert reset low first */
-    HAL_GPIO_WritePin(ETHRST_GPIO_Port, ETHRST_Pin, GPIO_PIN_RESET);
+    /* ETHRST (PD11) — output. The KSZ8863 is a pass-through switch forwarding
+     * traffic between its external ports (1<->2) autonomously, so it MUST keep
+     * running across a warm MCU reboot (soft reset / IWDG / NRST): the
+     * bootloader runs first on every reset, so it — not the application — owns
+     * the switch-reset policy.
+     *
+     * Cold boot (power-on / brown-out): pulse RESET# low then high for a clean
+     * switch init. Warm reboot: leave ETHRST high (never assert reset) so the
+     * pass-through link on ports 1/2 survives the MCU restart.
+     * (Consumes the RCC reset-cause flags; the boot-entry decision uses the
+     * no-init RAM magic, not RCC, so clearing them here is safe.) */
     gi.Pin   = ETHRST_Pin;
     gi.Mode  = GPIO_MODE_OUTPUT_PP;
     gi.Pull  = GPIO_NOPULL;
     gi.Speed = GPIO_SPEED_FREQ_LOW;
-    HAL_GPIO_Init(ETHRST_GPIO_Port, &gi);
 
-    /* KSZ8863 hardware reset sequence:
-     *   RESET# held LOW >= 10 ms  (already asserted above)
-     *   then HIGH to release, wait >= 100 ms for internal init before MDIO. */
-    HAL_Delay(10);
-    HAL_GPIO_WritePin(ETHRST_GPIO_Port, ETHRST_Pin, GPIO_PIN_SET);
-    HAL_Delay(100);
+    const uint32_t csr = RCC->CSR;
+    const uint32_t cold_boot = csr & (RCC_CSR_PORRSTF | RCC_CSR_BORRSTF);
+    __HAL_RCC_CLEAR_RESET_FLAGS();
+
+    if (cold_boot != 0u) {
+        HAL_GPIO_WritePin(ETHRST_GPIO_Port, ETHRST_Pin, GPIO_PIN_RESET);
+        HAL_GPIO_Init(ETHRST_GPIO_Port, &gi);
+        HAL_Delay(10);                                     /* RESET# low >= 10 ms  */
+        HAL_GPIO_WritePin(ETHRST_GPIO_Port, ETHRST_Pin, GPIO_PIN_SET);
+        HAL_Delay(100);                                    /* internal init >= 100 ms */
+    } else {
+        /* Warm reboot: keep the switch released and running. */
+        HAL_GPIO_WritePin(ETHRST_GPIO_Port, ETHRST_Pin, GPIO_PIN_SET);
+        HAL_GPIO_Init(ETHRST_GPIO_Port, &gi);
+    }
 
     /* STAT_LED (per-variant: PC8 on 12DI/4RTD, PE9 on 12DO) — output */
     HAL_GPIO_WritePin(STAT_LED_GPIO_Port, STAT_LED_Pin, GPIO_PIN_RESET);

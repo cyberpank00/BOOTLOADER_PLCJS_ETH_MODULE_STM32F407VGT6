@@ -1,0 +1,20 @@
+Diagnostics:
+  UnusedIncludes: None
+  MissingIncludes: None
+CompileFlags:
+  # Point clangd at the compile database that covers Core/Src, Application/,
+  # LWIP/ etc. `build/` is produced by `cmake --preset Release`; the per-variant
+  # build_all.ps1 outputs live in build/<variant>-Release. Adjust if you only
+  # build a variant (e.g. build/12di-Release).
+  CompilationDatabase: build
+  # Index this ARM (Cortex-M4F) firmware with the STM32CubeCLT
+  # arm-none-eabi-gcc cross compiler instead of clangd's bundled host clang, so
+  # the CMSIS/HAL headers and the -mcpu/-mfpu/-mfloat-abi machine flags resolve
+  # (otherwise clangd reports bogus "file not found" / "undeclared" errors).
+  # Resolved via PATH (STM32CubeCLT GNU-tools-for-STM32/bin); replace with an
+  # absolute path if it is not on PATH.
+  Compiler: arm-none-eabi-gcc
+  Remove:
+    # GCC-only flags clang's parser does not recognise.
+    - -fstack-usage
+    - -ftls-model=*

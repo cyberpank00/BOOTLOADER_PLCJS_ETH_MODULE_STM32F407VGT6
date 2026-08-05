@@ -68,20 +68,62 @@ Identity constants (defaults for the 12-DI/D4MG variant, CMake-configurable):
 
 ## Network configuration
 
-The current bootloader network settings are hardcoded in `LWIP/App/lwip.c`:
+The bootloader comes up on an **AutoIP link-local** address (RFC 3927),
+derived deterministically from the chip UID in `LWIP/App/lwip.c` — the same
+scheme the applications use:
 
-- IP: `192.168.1.2`
-- netmask: `255.255.255.0`
-- gateway: `192.168.1.1`
-- Modbus TCP port: `502`
-- Modbus unit id: `1`
+- IP: `169.254.<mac[4]>.<mac[5]>` (host octets clamped to 1..254)
+- netmask: `255.255.0.0`
+- gateway: none
+- Modbus TCP port: `502`, unit id: `1`
+
+Because the address is not fixed, the bootloader is located **by MAC** over the
+discovery protocol (see below). Its address can be reassigned live for a session
+with a discovery `SET_NET` (not persisted — the bootloader has no settings
+store). `tools/fw_update.mjs` does this automatically.
 
 Current limitations:
 
-- static IP only
 - no DHCP in bootloader
-- no runtime IP change via Modbus TCP
+- SET_NET changes are live-only (lost on reset)
 - single TCP client only
+
+## Discovery protocol (PDP) and factory addressing
+
+Both the bootloader and the applications answer the PLCJS Discovery Protocol
+(**UDP broadcast, port 20556**), modelled on Siemens/PROFINET DCP, so a module
+is found and addressed **by MAC** even when its IP/subnet is unknown or wrong.
+See `Application/discovery/discovery.c`.
+
+- `IDENTIFY` (0x01/0x81) — product id, hw, fw, net mode, `in_bootloader`, IP,
+  mask, name. Responses are broadcast, so they cross subnet mismatches on one
+  L2 segment.
+- `SET_NET` (0x02) — assign static / DHCP / link-local (applied live).
+- `SET_NAME` (0x03), `FLASH_LED` (0x04), `REBOOT` (0x05), `FACTORY` (0x06).
+  (The bootloader returns an error for SET_NAME/FACTORY — no persistent store.)
+
+> **Firewall:** responses are UDP broadcast, so the host must allow **inbound
+> UDP:20556** or discovery finds nothing. One-off (admin PowerShell):
+> `New-NetFirewallRule -DisplayName "PLCJS PDP" -Direction Inbound -Protocol UDP -LocalPort 20556 -Action Allow`
+
+Factory / unconfigured state is link-local, so a brand-new module never
+collides with the customer network; assign it a real IP with the discovery tool
+(`ModbusTool` "Обнаружение" tab) or a plain Modbus client on the labelled
+`169.254.x.y` address.
+
+### Precomputing the label identity (`tools/device_id.mjs`)
+
+The MAC / link-local IP printed on a device label can be computed from the
+96-bit UID **before flashing**, matching `Application/net_id/net_id.c` exactly:
+
+```
+node tools/device_id.mjs --stlink --variant 12di      # read UID via ST-Link
+node tools/device_id.mjs <24-hex-UID> --variant 12do  # offline from a UID dump
+node tools/device_id.mjs <24-hex-UID> --csv           # MAC,link-local[,name]
+```
+
+Example output: `MAC 02:00:E3:B0:5D:F7`, `link-local 169.254.93.247`,
+`NetBIOS BL-12DI-B05DF7`.
 
 ## How bootloader entry works
 
@@ -188,17 +230,26 @@ node tools/fw_update.mjs reboot
 node tools/fw_update.mjs app-bootloader
 ```
 
+Because the bootloader now defaults to link-local, the client **auto-resolves**
+its address: `app-bootloader` learns the target MAC from the running app, then
+after the reset finds the bootloader by MAC via broadcast IDENTIFY. If the
+discovered (link-local) bootloader is on a different subnet than the host, the
+client reassigns it live to the desired IP with a discovery `SET_NET` and
+continues. `update` resolves the boot IP the same way. (Requires inbound
+UDP:20556 in the host firewall — see the Discovery section.)
+
 Default client parameters:
 
-- bootloader IP: `192.168.1.2`
+- desired/assign bootloader IP: `192.168.1.2` (used as the SET_NET target)
 - application IP: `192.168.1.10`
-- port: `502`
-- unit id: `1`
+- port: `502`, unit id: `1`
 
 Useful options:
 
-- `--boot-ip` / `--ip` - override bootloader target
-- `--app-ip` - override application target
+- `--boot-ip` / `--ip` - bootloader IP to use / assign
+- `--app-ip` - application target
+- `--nic <ip>` - local NIC to broadcast discovery from (multi-homed hosts)
+- `--mac <aa:bb:..>` - target MAC to disambiguate when several are present
 
 ## Entering bootloader from the main application
 

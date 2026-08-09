@@ -5,9 +5,9 @@ firmware update over Modbus TCP). This file is the orientation map for agents;
 user-facing documentation lives in `README.md` / `README_RU.md`, and the
 update-utility protocol spec in `FW_UTIL_PROG_SPEC/`.
 
-**Despite the `..._12DI_...` name, this bootloader serves every module variant.**
-The code is identical across boards; variants differ only in the `PRODUCT_ID` /
-`HW_REVISION` identity constants baked in at build time.
+**This bootloader serves every module variant.** The code is identical across
+boards; variants differ only in the `PRODUCT_ID` / `HW_REVISION` identity
+constants baked in at build time.
 
 **This repo owns the contracts the whole workspace depends on.** `flash_map.h`,
 `app_validate.h` (`fw_header_t`) and `scripts/variants.csv` are the
@@ -199,3 +199,23 @@ Changing the OTA register interface in `fw_update_proto.h` requires updating
 `src/protocol/BootloaderProtocol.*` and `src/tabs/FwWorker.*` in ModbusTool, plus
 `tools/fw_update.mjs` here. There is no shared code between them — three
 independent implementations of the same protocol.
+
+## Maintaining this file
+
+`AGENTS.md` is a living document, not a one-time write. Update it **in the same
+commit** as the change it describes — a stale map is worse than no map, because
+it actively misleads. Touch it when:
+
+- a contract mirrored in other repos changes (`fw_header_t`, `FW_HEADER_OFFSET`,
+  `BOOT_REQUEST_*`, flash map, PDP wire format) — update the *Invariants* section
+  here **and** the corresponding section in every application firmware;
+- the OTA register interface (`fw_update_proto.h`) or update sequence changes;
+- the build procedure, toolchain or linker contract changes;
+- `BOOTLOADER_VERSION` is bumped and the version-policy text needs the new
+  example value;
+- a variant is added to or removed from `scripts/variants.csv`;
+- the flash-sector-11 / 4RTD-calibration conflict rule changes.
+
+Pure refactors with no behavioural change do not require an update, but when in
+doubt, update — the cost is a few lines of text, the cost of a stale invariant
+is a bricked board.

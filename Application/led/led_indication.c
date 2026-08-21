@@ -1,14 +1,14 @@
 /**
  * @file  led_indication.c
- * @brief STAT_LED (PC8) patterns for bootloader states.
+ * @brief STAT_LED patterns for bootloader states.
  */
 
 #include "led_indication.h"
 #include "stm32f4xx_hal.h"
 #include "main.h"
 
-/* Per-variant STAT_LED pin/port (see main.h). On 12DO this is PE9; on 12DI/4RTD
- * it is PC8. Must never be a DQ output pin. */
+/* Per-variant STAT_LED pin/port (see main.h). On 12DO this is PE9; on 12DI it
+ * is PC6; on 4RTD it is PC8. Must never be a DQ output pin. */
 #define LED_PORT    STAT_LED_GPIO_Port
 #define LED_PIN     STAT_LED_Pin
 

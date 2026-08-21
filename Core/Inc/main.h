@@ -35,7 +35,12 @@ void SystemClock_Config(void);
 #define STAT_LED_GPIO_Port  GPIOE
 #define FACT_RES_Pin        GPIO_PIN_10
 #define FACT_RES_GPIO_Port  GPIOE
-#else                                      /* 12DI, 4RTD, ... — STAT_LED=PC8, FACT_RES=PC6 */
+#elif (PRODUCT_ID_DEFAULT == 0x504C1201u) /* 12DI — STAT_LED=PC6, FACT_RES=PC8 (swapped board rev) */
+#define STAT_LED_Pin        GPIO_PIN_6
+#define STAT_LED_GPIO_Port  GPIOC
+#define FACT_RES_Pin        GPIO_PIN_8
+#define FACT_RES_GPIO_Port  GPIOC
+#else                                      /* 4RTD, ... — STAT_LED=PC8, FACT_RES=PC6 */
 #define STAT_LED_Pin        GPIO_PIN_8
 #define STAT_LED_GPIO_Port  GPIOC
 #define FACT_RES_Pin        GPIO_PIN_6

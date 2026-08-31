@@ -85,7 +85,7 @@
 #define HW_REVISION_DEFAULT     0x010101u  /* hw:01.01.01 */
 #endif
 /* BL version encoding: (major << 8) | minor  — mirrors fw_version in fw_header_t */
-#define BOOTLOADER_VERSION      0x00000102u  /* 1.2 */
+#define BOOTLOADER_VERSION      0x00000103u  /* 1.3 */
 
 /* Maximum firmware block size for Modbus transfer (bytes). */
 #define FW_MAX_BLOCK_SIZE       240u

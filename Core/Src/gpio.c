@@ -49,7 +49,7 @@ void MX_GPIO_Init(void)
         HAL_GPIO_Init(ETHRST_GPIO_Port, &gi);
     }
 
-    /* STAT_LED (per-variant: PC6 on 12DI, PC8 on 4RTD, PE9 on 12DO) — output */
+    /* STAT_LED (per-variant: PC6 on 12DI, PE9 on 12DO & 4RTD, PC8 default) — output */
     HAL_GPIO_WritePin(STAT_LED_GPIO_Port, STAT_LED_Pin, GPIO_PIN_RESET);
     gi.Pin   = STAT_LED_Pin;
     gi.Mode  = GPIO_MODE_OUTPUT_PP;
@@ -57,7 +57,7 @@ void MX_GPIO_Init(void)
     gi.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(STAT_LED_GPIO_Port, &gi);
 
-    /* FACT_RES / service button (per-variant: PC8 on 12DI, PC6 on 4RTD, PE10 on 12DO)
+    /* FACT_RES / service button (per-variant: PC8 on 12DI, PE10 on 12DO & 4RTD, PC6 default)
      * — input with pull-up. The bootloader does not read it; configured only
      * to a defined state (and to avoid leaving the correct pin floating). */
     gi.Pin  = FACT_RES_Pin;

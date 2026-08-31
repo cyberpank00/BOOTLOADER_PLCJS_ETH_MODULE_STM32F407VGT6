@@ -7,8 +7,8 @@
 #include "stm32f4xx_hal.h"
 #include "main.h"
 
-/* Per-variant STAT_LED pin/port (see main.h). On 12DO this is PE9; on 12DI it
- * is PC6; on 4RTD it is PC8. Must never be a DQ output pin. */
+/* Per-variant STAT_LED pin/port (see main.h). On 12DO & 4RTD this is PE9; on
+ * 12DI it is PC6. Must never be a DQ output pin. */
 #define LED_PORT    STAT_LED_GPIO_Port
 #define LED_PIN     STAT_LED_Pin
 

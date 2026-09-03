@@ -189,7 +189,7 @@ Sibling repos under `E:\STM_Programming\`:
 |---|---|---|---|
 | `PLCJS_ETH_MODULE_12DI_D4MG_...` | `0x504C1201` | `0x12D1` | 12 discrete inputs. Reference variant for shared app subsystems. |
 | `PLCJS_ETH_MODULE_12DQ_D4MG_...` | `0x504C1202` | `0x12D0` | 12 discrete outputs. |
-| `PLCJS_ETH_MODULE_4RTD_D4MG_...` | `0x504C0403` | `0x04D1` | 4x RTD. **Uses sector 11 for write-once calibration.** |
+| `PLCJS_ETH_MODULE_4RTD_D4MG_...` | `0x504C0403` | `0x04D1` | 4x RTD, HW2.1 (`hw_revision 0x020100`, ADS1220). **Uses sector 11 for write-once calibration.** HW1.x boards need an `0x010101` build (firmware tag `hw1.1-last`). |
 | `PLCJS_Module_ModbusTool` | — | — | Qt6 client; `FwWorker`/`BootloaderProtocol` implement this repo's OTA protocol, `Pdp.cpp` the discovery protocol. |
 
 `scripts/variants.csv` additionally declares `4aic`, `4aiv` and `4ao`, which have

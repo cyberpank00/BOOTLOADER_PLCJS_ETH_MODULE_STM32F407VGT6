@@ -334,7 +334,7 @@ count (BCD), `TT` = I/O type code.
 |---------|----------|----------|------------|-------------|
 | `12di`  | 12 | Digital Input   (01) | `0x504C1201` | `0x010101` |
 | `12do`  | 12 | Digital Output  (02) | `0x504C1202` | `0x010101` |
-| `4rtd`  | 4  | RTD temperature (03) | `0x504C0403` | `0x010101` |
+| `4rtd`  | 4  | RTD temperature (03) | `0x504C0403` | `0x020100` (HW2.1) |
 | `4aic`  | 4  | Analog In current (04) | `0x504C0404` | `0x010101` |
 | `4aiv`  | 4  | Analog In voltage (05) | `0x504C0405` | `0x010101` |
 | `4ao`   | 4  | Analog Output   (06) | `0x504C0406` | `0x010101` |
@@ -365,7 +365,7 @@ and the resulting `.hex` / `.bin` are copied to `dist/` with a descriptive name.
 cmake -S . -B build/4rtd -G Ninja \
       -DCMAKE_TOOLCHAIN_FILE=arm-none-eabi-toolchain.cmake \
       -DCMAKE_BUILD_TYPE=Release \
-      -DPRODUCT_ID=0x504C0403 -DHW_REVISION=0x010101
+      -DPRODUCT_ID=0x504C0403 -DHW_REVISION=0x020100
 cmake --build build/4rtd
 ```
 

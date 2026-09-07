@@ -24,7 +24,7 @@ const UID_ADDR = 0x1fff7a10;
 
 const VARIANTS = {
   '12di': 0x504c1201, '12do': 0x504c1202, '4rtd': 0x504c0403,
-  '4aic': 0x504c0404, '4aiv': 0x504c0405, '4ao': 0x504c0406,
+  '4aic': 0x504c0404, '4aiv': 0x504c0405, '4ao': 0x504c0406, '8aic': 0x504c0804,
 };
 function variantToken(pid) {
   for (const [k, v] of Object.entries(VARIANTS)) if (v === pid) return k.toUpperCase();

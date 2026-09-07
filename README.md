@@ -63,7 +63,7 @@ Identity constants (defaults for the 12-DI/D4MG variant, CMake-configurable):
 |---|---|---|
 | `PRODUCT_ID_DEFAULT` | `0x504C1201` | `-DPRODUCT_ID=0x...` |
 | `HW_REVISION_DEFAULT` | `0x010101` | `-DHW_REVISION=0x...` |
-| `BOOTLOADER_VERSION` | `1.2` | — |
+| `BOOTLOADER_VERSION` | `1.4` | — |
 | `FW_MAX_BLOCK_SIZE` | `240` bytes | — |
 
 ## Network configuration
@@ -338,6 +338,7 @@ count (BCD), `TT` = I/O type code.
 | `4aic`  | 4  | Analog In current (04) | `0x504C0404` | `0x010101` |
 | `4aiv`  | 4  | Analog In voltage (05) | `0x504C0405` | `0x010101` |
 | `4ao`   | 4  | Analog Output   (06) | `0x504C0406` | `0x010101` |
+| `8aic`  | 8  | Analog In current (04) | `0x504C0804` | `0x010101` |
 
 The table lives in [`scripts/variants.csv`](scripts/variants.csv) and is the
 single source of truth. Add a new board = add one row.

@@ -40,7 +40,7 @@ void SystemClock_Config(void);
 #define STAT_LED_GPIO_Port  GPIOC
 #define FACT_RES_Pin        GPIO_PIN_8
 #define FACT_RES_GPIO_Port  GPIOC
-#elif (PRODUCT_ID_DEFAULT == 0x504C0403u) /* 4RTD — STAT_LED=PE9, FACT_RES=PE10 (board rev) */
+#elif (PRODUCT_ID_DEFAULT == 0x504C0403u) || (PRODUCT_ID_DEFAULT == 0x504C0804u) /* 4RTD / 8AIC — STAT_LED=PE9, FACT_RES=PE10 */
 #define STAT_LED_Pin        GPIO_PIN_9
 #define STAT_LED_GPIO_Port  GPIOE
 #define FACT_RES_Pin        GPIO_PIN_10

@@ -5,3 +5,4 @@ name,product_id,hw_revision,description
 4aic,0x504C0404,0x010101,4x Analog Input (current)
 4aiv,0x504C0405,0x010101,4x Analog Input (voltage)
 4ao,0x504C0406,0x010101,4x Analog Output
+8aic,0x504C0804,0x010101,8x Analog Input (current, 4-20 mA)

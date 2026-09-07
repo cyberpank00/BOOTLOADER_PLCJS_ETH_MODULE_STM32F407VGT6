@@ -135,7 +135,7 @@ uses the major field of each; keep the shift correct when touching this code.
 
 **Mandatory.** Every change to bootloader behaviour ships with
 `BOOTLOADER_VERSION` in `Application/flash/flash_map.h` incremented by one minor
-(`0x00000102` → `0x00000103`). It is reported over Modbus (IR `0x0002`), so it is
+(`0x00000103` → `0x00000104`). It is reported over Modbus (IR `0x0002`), so it is
 the only way to identify which bootloader is on a board that will not boot its
 application — an un-bumped change is a defect.
 
@@ -190,6 +190,7 @@ Sibling repos under `E:\STM_Programming\`:
 | `PLCJS_ETH_MODULE_12DI_D4MG_...` | `0x504C1201` | `0x12D1` | 12 discrete inputs. Reference variant for shared app subsystems. |
 | `PLCJS_ETH_MODULE_12DQ_D4MG_...` | `0x504C1202` | `0x12D0` | 12 discrete outputs. |
 | `PLCJS_ETH_MODULE_4RTD_D4MG_...` | `0x504C0403` | `0x04D1` | 4x RTD, HW2.1 (`hw_revision 0x020100`, ADS1220). **Uses sector 11 for write-once calibration.** HW1.x boards need an `0x010101` build (firmware tag `hw1.1-last`). |
+| `PLCJS_ETH_MODULE_8AIC_D4MG_...` | `0x504C0804` | `0x08AC` | 8x 4–20 mA current inputs (two ADS1220). STAT_LED/FACT_RES on PE9/PE10 like 4RTD. **Also uses sector 11 for write-once calibration.** |
 | `PLCJS_Module_ModbusTool` | — | — | Qt6 client; `FwWorker`/`BootloaderProtocol` implement this repo's OTA protocol, `Pdp.cpp` the discovery protocol. |
 
 `scripts/variants.csv` additionally declares `4aic`, `4aiv` and `4ao`, which have

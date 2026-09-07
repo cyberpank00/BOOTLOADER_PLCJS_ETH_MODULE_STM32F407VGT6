@@ -25,6 +25,7 @@ static const char* variant_token(void)
     case 0x504C1201u: return "12DI";
     case 0x504C1202u: return "12DO";
     case 0x504C0403u: return "4RTD";
+    case 0x504C0804u: return "8AIC";
     case 0x504C0404u: return "4AIC";
     case 0x504C0405u: return "4AIV";
     case 0x504C0406u: return "4AO";

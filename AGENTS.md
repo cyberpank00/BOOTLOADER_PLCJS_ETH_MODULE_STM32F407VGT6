@@ -128,14 +128,17 @@ An image is accepted iff:
 
 Mind the two encodings: `fw_header_t.hw_revision` is 16-bit
 `(major << 8) | minor`, while the bootloader's own `HW_REVISION_DEFAULT` and
-`variants.csv` are 24-bit `(major << 16) | (minor << 8) | patch`. The comparison
-uses the major field of each; keep the shift correct when touching this code.
+`variants.csv` are 24-bit `(major << 16) | (minor << 8) | patch`. Pass
+`HW_REVISION_DEFAULT_U16` (= `>> 8`) to `app_validate_header()`, never a bare
+`(uint16_t)` cast — that truncation dropped the major byte and rejected every
+HW2.x image with `PRODUCT_MISMATCH` (fixed in v1.6; HW1.x variants only worked
+because `0x010101` truncates to `0x0101` by coincidence).
 
 ### Version policy — bump the minor on every change
 
 **Mandatory.** Every change to bootloader behaviour ships with
 `BOOTLOADER_VERSION` in `Application/flash/flash_map.h` incremented by one minor
-(`0x00000104` → `0x00000105`). It is reported over Modbus (IR `0x0002`), so it is
+(`0x00000106` → `0x00000107`). It is reported over Modbus (IR `0x0002`), so it is
 the only way to identify which bootloader is on a board that will not boot its
 application — an un-bumped change is a defect.
 

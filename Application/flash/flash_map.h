@@ -84,8 +84,12 @@
 #ifndef HW_REVISION_DEFAULT
 #define HW_REVISION_DEFAULT     0x010101u  /* hw:01.01.01 */
 #endif
+/* 16-bit form (major << 8) | minor — the fw_header_t.hw_revision encoding.
+ * Always pass THIS to app_validate_header(): a bare (uint16_t) cast of the
+ * 24-bit value drops the major byte (0x020100 -> 0x0100, major 1). */
+#define HW_REVISION_DEFAULT_U16 ((uint16_t)(HW_REVISION_DEFAULT >> 8u))
 /* BL version encoding: (major << 8) | minor  — mirrors fw_version in fw_header_t */
-#define BOOTLOADER_VERSION      0x00000105u  /* 1.5 */
+#define BOOTLOADER_VERSION      0x00000106u  /* 1.6 */
 
 /* Maximum firmware block size for Modbus transfer (bytes). */
 #define FW_MAX_BLOCK_SIZE       240u

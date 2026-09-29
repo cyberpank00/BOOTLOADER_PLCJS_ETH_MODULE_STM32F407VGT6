@@ -209,7 +209,7 @@ static void exec_finalize(void)
      * This ensures the binary itself carries the correct product identity,
      * independent of what the updater tool claimed in BEGIN_UPDATE. */
     if (!app_validate_header(STAGING_FLASH_BASE, PRODUCT_ID_DEFAULT,
-                             (uint16_t)HW_REVISION_DEFAULT)) {
+                             HW_REVISION_DEFAULT_U16)) {
         s_meta->last_error = BOOT_ERR_PRODUCT_MISMATCH;
         s_cmd_status = CMD_STATUS_ERROR;
         return;

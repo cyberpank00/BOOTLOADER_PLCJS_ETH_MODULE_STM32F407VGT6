@@ -157,7 +157,7 @@ static void sm_verify_app(void)
     /* Verify the firmware header in the installed image carries the
      * correct product identity (redundant check after installation). */
     if (!app_validate_header(APP_FLASH_BASE, PRODUCT_ID_DEFAULT,
-                             (uint16_t)HW_REVISION_DEFAULT)) {
+                             HW_REVISION_DEFAULT_U16)) {
         s_meta.app_valid   = 0u;
         s_meta.last_error  = BOOT_ERR_PRODUCT_MISMATCH;
         s_meta.boot_state  = (uint32_t)BOOT_ERROR;

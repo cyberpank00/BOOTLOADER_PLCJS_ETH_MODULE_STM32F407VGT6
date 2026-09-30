@@ -193,6 +193,7 @@ static void sm_verify_app(void)
 
 static void sm_ready_to_boot(void)
 {
+    led_indication_deinit();     /* TIM7 PWM off before handing over the MCU */
     boot_jump_to_app(APP_FLASH_BASE);
 }
 

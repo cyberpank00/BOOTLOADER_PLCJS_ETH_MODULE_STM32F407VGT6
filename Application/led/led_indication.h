@@ -4,10 +4,13 @@
  *
  *  Pattern              Meaning
  *  -------------------  ----------------------------
- *  Slow blink (1 Hz)    Waiting for command
+ *  Fade in/out (1 Hz)   Waiting for command
  *  Fast blink (5 Hz)    Receiving firmware
  *  Burst (3 blinks)     Installing firmware
  *  Solid ON             Error
+ *
+ *  Driven through a TIM7 software PWM (see led_indication.c); call
+ *  led_indication_deinit() before jumping to the application.
  */
 #ifndef LED_INDICATION_H
 #define LED_INDICATION_H
@@ -27,6 +30,8 @@ typedef enum {
 } led_pattern_t;
 
 void led_indication_init(void);
+/** Stop the PWM timer and its interrupt, LED off. Required before the jump. */
+void led_indication_deinit(void);
 void led_indication_set(led_pattern_t pattern);
 void led_indication_poll(uint32_t now_ms);
 

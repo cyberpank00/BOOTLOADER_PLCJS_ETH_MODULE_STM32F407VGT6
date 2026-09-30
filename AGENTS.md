@@ -71,7 +71,7 @@ the update path, that a real OTA cycle was run against hardware.
 | `net_id/` | MAC / link-local IPv4 from the MCU UID — identical algorithm to the apps, so the address does not change across the app↔bootloader transition. |
 | `net_id/netbiosns.c` | NetBIOS name responder. |
 | `crc/crc32.c` | CRC32 used for image verification. |
-| `led/led_indication.c` | Bootloader-specific LED patterns. |
+| `led/led_indication.c` | Bootloader-specific LED patterns; STAT_LED is driven by a TIM7 software PWM (IDLE = 1 Hz fade). **TIM7 is taken**; `led_indication_deinit()` must run before `boot_jump_to_app()`. |
 | `third_party/nanomodbus/` | Vendored protocol library. |
 
 ## Flash and RAM layout (authoritative)
@@ -138,7 +138,7 @@ because `0x010101` truncates to `0x0101` by coincidence).
 
 **Mandatory.** Every change to bootloader behaviour ships with
 `BOOTLOADER_VERSION` in `Application/flash/flash_map.h` incremented by one minor
-(`0x00000106` → `0x00000107`). It is reported over Modbus (IR `0x0002`), so it is
+(`0x00000107` → `0x00000108`). It is reported over Modbus (IR `0x0002`), so it is
 the only way to identify which bootloader is on a board that will not boot its
 application — an un-bumped change is a defect.
 

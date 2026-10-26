@@ -22,7 +22,7 @@ typedef enum {
     INST_ERROR,
 } installer_state_t;
 
-void              fw_installer_start(metadata_t *meta);
+bool              fw_installer_start(metadata_t *meta);
 installer_state_t fw_installer_poll(metadata_t *meta);
 installer_state_t fw_installer_get_state(void);
 

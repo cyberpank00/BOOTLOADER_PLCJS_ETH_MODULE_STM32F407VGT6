@@ -17,15 +17,41 @@ static installer_state_t s_state;
 static uint32_t          s_offset;
 static uint32_t          s_erase_idx;
 
-void fw_installer_start(metadata_t *meta)
+static void installer_fail(metadata_t *meta, boot_error_t error)
 {
-    meta->install_in_progress = 1u;
-    meta->app_valid           = 0u;
-    metadata_save(meta);
+    s_state = INST_ERROR;
+    meta->boot_state = BOOT_ERROR;
+    meta->last_error = error;
+    meta->install_requested = 0u;
+    meta->install_in_progress = 0u;
+    if (!metadata_save(meta)) meta->last_error = BOOT_ERR_FLASH_WRITE;
+}
+
+bool fw_installer_start(metadata_t *meta)
+{
+    if (!meta->staging_valid || !metadata_params_valid(meta) ||
+        !app_validate_image(STAGING_FLASH_BASE, meta->image_size, meta->image_crc32)) {
+        installer_fail(meta, BOOT_ERR_APP_VALIDATE);
+        return false;
+    }
+    metadata_t next = *meta;
+    next.install_requested = 1u;
+    next.install_in_progress = 1u;
+    next.app_valid = 0u;
+    next.boot_state = BOOT_INSTALL_FW;
+    next.last_error = BOOT_ERR_NONE;
+    if (!metadata_save(&next)) {
+        s_state = INST_ERROR;
+        meta->boot_state = BOOT_ERROR;
+        meta->last_error = BOOT_ERR_FLASH_WRITE;
+        return false;
+    }
+    *meta = next;
 
     s_state     = INST_ERASING;
     s_offset    = 0u;
     s_erase_idx = 0u;
+    return true;
 }
 
 installer_state_t fw_installer_poll(metadata_t *meta)
@@ -37,8 +63,7 @@ installer_state_t fw_installer_poll(metadata_t *meta)
          * and would time out the updater's status poll). */
         uint32_t count = APP_LAST_SECTOR - APP_FIRST_SECTOR + 1u;
         if (!flash_if_erase_sectors(APP_FIRST_SECTOR + s_erase_idx, 1u)) {
-            meta->last_error = BOOT_ERR_FLASH_ERASE;
-            s_state = INST_ERROR;
+            installer_fail(meta, BOOT_ERR_FLASH_ERASE);
             break;
         }
         s_erase_idx++;
@@ -50,14 +75,17 @@ installer_state_t fw_installer_poll(metadata_t *meta)
     }
 
     case INST_COPYING: {
+        if (!metadata_params_valid(meta) || s_offset >= meta->image_size) {
+            installer_fail(meta, BOOT_ERR_BAD_PARAMS);
+            break;
+        }
         uint32_t remaining = meta->image_size - s_offset;
         uint32_t chunk     = (remaining > COPY_CHUNK) ? COPY_CHUNK : remaining;
 
         if (!flash_if_write(APP_FLASH_BASE + s_offset,
                             (const uint8_t *)(STAGING_FLASH_BASE + s_offset),
                             chunk)) {
-            meta->last_error = BOOT_ERR_FLASH_WRITE;
-            s_state = INST_ERROR;
+            installer_fail(meta, BOOT_ERR_FLASH_WRITE);
             break;
         }
 
@@ -69,49 +97,37 @@ installer_state_t fw_installer_poll(metadata_t *meta)
     }
 
     case INST_VERIFYING: {
-        uint32_t crc = crc32_calc((const uint8_t *)APP_FLASH_BASE,
-                                   meta->image_size);
-        if (crc != meta->image_crc32) {
-            meta->last_error = BOOT_ERR_APP_VALIDATE;
-            s_state = INST_ERROR;
-            break;
-        }
-        if (!app_validate_vectors(APP_FLASH_BASE)) {
-            meta->last_error = BOOT_ERR_APP_VALIDATE;
-            s_state = INST_ERROR;
-            break;
-        }
-        if (!app_validate_header(APP_FLASH_BASE, PRODUCT_ID_DEFAULT,
-                                 HW_REVISION_DEFAULT_U16)) {
-            meta->last_error = BOOT_ERR_PRODUCT_MISMATCH;
-            s_state = INST_ERROR;
+        if (!app_validate_full(APP_FLASH_BASE, meta->image_size, meta->image_crc32)) {
+            installer_fail(meta, BOOT_ERR_APP_VALIDATE);
             break;
         }
 
-        meta->app_valid           = 1u;
-        meta->install_requested   = 0u;
-        meta->install_in_progress = 0u;
-        meta->staging_valid       = 0u;
+        metadata_t next = *meta;
+        next.app_valid           = 1u;
+        next.install_requested   = 0u;
+        next.install_in_progress = 0u;
+        next.staging_valid       = 0u;
         /* Read version from the installed image header (ground truth). */
         {
             fw_header_t hdr;
-            meta->app_fw_version = app_read_header(APP_FLASH_BASE, &hdr)
+            next.app_fw_version = app_read_header(APP_FLASH_BASE, &hdr)
                                    ? hdr.fw_version : meta->fw_version;
         }
-        meta->app_image_size      = meta->image_size;
-        meta->app_image_crc32     = meta->image_crc32;
-        meta->boot_state          = (uint32_t)BOOT_READY_TO_BOOT;
-        meta->last_error          = (uint32_t)BOOT_ERR_NONE;
-        metadata_save(meta);
+        next.app_image_size      = meta->image_size;
+        next.app_image_crc32     = meta->image_crc32;
+        next.boot_state          = (uint32_t)BOOT_READY_TO_BOOT;
+        next.last_error          = (uint32_t)BOOT_ERR_NONE;
+        if (!metadata_save(&next)) {
+            installer_fail(meta, BOOT_ERR_FLASH_WRITE);
+            break;
+        }
+        *meta = next;
 
         s_state = INST_DONE;
         break;
     }
 
     case INST_ERROR:
-        meta->install_in_progress = 0u;
-        meta->app_valid           = 0u;
-        metadata_save(meta);
         break;
 
     case INST_IDLE:

@@ -1,12 +1,13 @@
 /**
  * @file  metadata.c
- * @brief Persistent metadata in Flash sector 4.
+ * @brief Persistent metadata in Flash sector 5.
  */
 
 #include "metadata.h"
 #include "flash_map.h"
 #include "flash_if.h"
 #include "crc32.h"
+#include "app_validate.h"
 #include <string.h>
 
 static uint32_t meta_crc(const metadata_t *m)
@@ -40,7 +41,8 @@ bool metadata_save(const metadata_t *m)
     if (!flash_if_erase_sectors(META_FLASH_SECTOR, 1u)) {
         return false;
     }
-    return flash_if_write(META_FLASH_BASE, (const uint8_t *)&tmp, sizeof(tmp));
+    return flash_if_write(META_FLASH_BASE, (const uint8_t *)&tmp, sizeof(tmp)) &&
+           memcmp((const void *)META_FLASH_BASE, &tmp, sizeof(tmp)) == 0;
 }
 
 void metadata_reset(metadata_t *m)
@@ -67,8 +69,20 @@ bool metadata_bitmap_get(const metadata_t *m, uint32_t block_index)
 
 bool metadata_all_blocks_received(const metadata_t *m)
 {
-    if (m->block_count == 0u) {
+    if (!metadata_params_valid(m) || m->received_block_count != m->block_count) {
         return false;
     }
-    return m->received_block_count >= m->block_count;
+    for (uint32_t i = 0; i < m->block_count; i++)
+        if (!metadata_bitmap_get(m, i)) return false;
+    return true;
+}
+
+bool metadata_params_valid(const metadata_t *m)
+{
+    return m->image_size >= FW_HEADER_OFFSET + sizeof(fw_header_t) &&
+           m->image_size <= APP_FLASH_SIZE && m->image_size <= STAGING_FLASH_SIZE &&
+           m->block_size != 0u && m->block_size <= FW_MAX_BLOCK_SIZE &&
+           (m->block_size & 3u) == 0u &&
+           m->block_count == (m->image_size + m->block_size - 1u) / m->block_size &&
+           m->block_count <= META_MAX_BLOCKS;
 }

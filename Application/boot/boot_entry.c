@@ -36,7 +36,8 @@ bool boot_entry_should_stay(const metadata_t *meta)
     }
 
     /* 3. Explicit request to enter bootloader */
-    if (meta->install_requested) {
+    if (meta->install_requested || meta->staging_valid ||
+        meta->boot_state == BOOT_ERROR) {
         return true;
     }
 
@@ -51,8 +52,8 @@ bool boot_entry_should_stay(const metadata_t *meta)
         return true;
     }
 
-    /* 6. Quick sanity check on vectors */
-    if (!app_validate_vectors(APP_FLASH_BASE)) {
+    /* 6. Validate the installed image before every boot. */
+    if (!app_validate_full(APP_FLASH_BASE, meta->app_image_size, meta->app_image_crc32)) {
         return true;
     }
 

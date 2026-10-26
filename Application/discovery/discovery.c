@@ -31,6 +31,7 @@
 #include <string.h>
 
 #include "net_id.h"
+#include "fw_update_proto.h"
 #include "led_indication.h"
 #include "flash_map.h"   /* PRODUCT_ID_DEFAULT, HW_REVISION_DEFAULT, BOOTLOADER_VERSION */
 
@@ -127,10 +128,13 @@ static void pdp_recv(void* arg, struct udp_pcb* pcb, struct pbuf* p,
 
     uint16_t plen;
     { uint16_t n; memcpy(&n, &buf[14], 2); plen = lwip_ntohs(n); }
-    if ((uint32_t)PDP_HDR_LEN + plen > len) {
-        plen = (len > PDP_HDR_LEN) ? (uint16_t)(len - PDP_HDR_LEN) : 0u;
-    }
+    if ((uint32_t)PDP_HDR_LEN + plen != len) return;
     const uint8_t* pl = &buf[PDP_HDR_LEN];
+    if ((opcode == PDP_OP_SET_NET || opcode == PDP_OP_REBOOT) &&
+        (bcast || fw_proto_busy())) {
+        pdp_reply_status(opcode, txid, PDP_STATUS_ERR);
+        return;
+    }
 
     switch (opcode) {
     case PDP_OP_IDENTIFY: {

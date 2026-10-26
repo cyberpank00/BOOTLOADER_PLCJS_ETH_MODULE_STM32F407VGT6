@@ -10,15 +10,23 @@
 #include "fw_update_proto.h"
 #include "nanomodbus.h"
 #include "lwip/tcp.h"
+#include "stm32f4xx_hal.h"
 #include <string.h>
 
 /* ---- Ring buffer for incoming TCP data ---------------------------------- */
-#define RX_BUF_SIZE 1024u
+#define RX_BUF_SIZE 8192u
+#define CLIENT_IDLE_MS 30000u
+#define FRAME_TIMEOUT_MS 5000u
+_Static_assert(RX_BUF_SIZE >= TCP_WND, "RX buffer must hold the advertised window");
 
 static uint8_t  s_rx_buf[RX_BUF_SIZE];
 static uint16_t s_rx_head;
 static uint16_t s_rx_tail;
 static uint16_t s_rx_count;
+static uint16_t s_frame_left;
+static uint32_t s_last_request;
+static uint32_t s_frame_since;
+static bool s_frame_waiting;
 
 static void rx_put(uint8_t b)
 {
@@ -38,13 +46,6 @@ static int rx_get(uint8_t *b)
     return 1;
 }
 
-static void rx_flush(void)
-{
-    s_rx_head  = 0;
-    s_rx_tail  = 0;
-    s_rx_count = 0;
-}
-
 /* Peek the byte at logical offset `idx` from the tail without consuming it. */
 static int rx_peek(uint16_t idx, uint8_t *b)
 {
@@ -61,12 +62,12 @@ static int rx_peek(uint16_t idx, uint8_t *b)
  * partially-received (TCP-fragmented) frame into the byte-at-a-time parser,
  * whose read callback returns immediately and cannot honour a real timeout.
  *
- * If the length field is impossible for our buffer (desync or garbage), the
- * ring is flushed to force resynchronisation on the next frame. */
-static bool rx_has_full_frame(void)
+ * Invalid framing closes the connection; a TCP stream cannot be resynchronised
+ * by discarding an arbitrary prefix. */
+static int rx_frame_size(void)
 {
     if (s_rx_count < 7u) {
-        return false;   /* need at least the 7-byte MBAP header */
+        return 0;   /* need at least the 7-byte MBAP header */
     }
 
     uint8_t len_hi = 0, len_lo = 0;
@@ -74,14 +75,14 @@ static bool rx_has_full_frame(void)
     rx_peek(5u, &len_lo);
     uint32_t len   = ((uint32_t)len_hi << 8) | (uint32_t)len_lo;
     uint32_t total = 6u + len;
+    uint8_t pid_hi = 0, pid_lo = 0;
+    rx_peek(2u, &pid_hi);
+    rx_peek(3u, &pid_lo);
 
-    if (len < 2u || total > RX_BUF_SIZE) {
-        /* Length cannot be valid: drop the buffered bytes to resync. */
-        rx_flush();
-        return false;
-    }
+    if (len < 2u || len > 254u || pid_hi != 0u || pid_lo != 0u)
+        return -1;
 
-    return s_rx_count >= (uint16_t)total;
+    return s_rx_count >= total ? (int)total : 0;
 }
 
 /* ---- TCP transmit buffer ------------------------------------------------ */
@@ -102,7 +103,9 @@ static int nmbs_read_cb(uint8_t *b, int32_t timeout_ms, void *arg)
 {
     (void)arg;
     (void)timeout_ms;
-    return rx_get(b);
+    if (s_frame_left == 0u || !rx_get(b)) return 0;
+    s_frame_left--;
+    return 1;
 }
 
 static int nmbs_write_cb(uint8_t b, int32_t timeout_ms, void *arg)
@@ -153,13 +156,15 @@ static void close_client(void)
         tcp_arg(s_client, NULL);
         tcp_recv(s_client, NULL);
         tcp_err(s_client, NULL);
-        tcp_close(s_client);
+        tcp_abort(s_client);
         s_client = NULL;
     }
     s_rx_head  = 0;
     s_rx_tail  = 0;
     s_rx_count = 0;
     s_tx_len   = 0;
+    s_frame_left = 0;
+    s_frame_waiting = false;
 }
 
 static err_t on_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p,
@@ -168,9 +173,11 @@ static err_t on_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p,
     (void)arg;
 
     if (p == NULL || err != ERR_OK) {
+        if (p != NULL) pbuf_free(p);
         close_client();
-        return ERR_OK;
+        return ERR_ABRT;
     }
+    if (p->tot_len > RX_BUF_SIZE - s_rx_count) return ERR_MEM;
 
     /* Copy incoming bytes into the ring buffer. */
     struct pbuf *q;
@@ -180,7 +187,7 @@ static err_t on_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p,
             rx_put(d[i]);
         }
     }
-    tcp_recved(tpcb, p->tot_len);
+    (void)tpcb;
     pbuf_free(p);
     return ERR_OK;
 }
@@ -194,6 +201,8 @@ static void on_err(void *arg, err_t err)
     s_rx_tail  = 0;
     s_rx_count = 0;
     s_tx_len   = 0;
+    s_frame_left = 0;
+    s_frame_waiting = false;
 }
 
 static err_t on_accept(void *arg, struct tcp_pcb *newpcb, err_t err)
@@ -214,6 +223,12 @@ static err_t on_accept(void *arg, struct tcp_pcb *newpcb, err_t err)
     tcp_arg(newpcb, NULL);
     tcp_recv(newpcb, on_recv);
     tcp_err(newpcb, on_err);
+    ip_set_option(newpcb, SOF_KEEPALIVE);
+    newpcb->keep_idle = 10000u;
+    newpcb->keep_intvl = 3000u;
+    newpcb->keep_cnt = 3u;
+    s_last_request = HAL_GetTick();
+    s_frame_waiting = false;
 
     s_rx_head  = 0;
     s_rx_tail  = 0;
@@ -256,10 +271,34 @@ void modbus_boot_server_init(metadata_t *meta, uint16_t port)
     /* Start listening. */
     s_listener = tcp_new();
     if (s_listener != NULL) {
-        tcp_bind(s_listener, IP_ADDR_ANY, port);
-        s_listener = tcp_listen(s_listener);
-        tcp_accept(s_listener, on_accept);
+        if (tcp_bind(s_listener, IP_ADDR_ANY, port) != ERR_OK) {
+            tcp_close(s_listener);
+            s_listener = NULL;
+            return;
+        }
+        struct tcp_pcb *listener = tcp_listen(s_listener);
+        if (listener == NULL) {
+            tcp_close(s_listener);
+            s_listener = NULL;
+            return;
+        }
+        s_listener = listener;
+        tcp_accept(listener, on_accept);
     }
+}
+
+static bool flush_response(void)
+{
+    if (s_tx_len == 0u) return true;
+    err_t err = tcp_write(s_client, s_tx_buf, s_tx_len, TCP_WRITE_FLAG_COPY);
+    if (err == ERR_MEM) return false;
+    if (err != ERR_OK) {
+        close_client();
+        return false;
+    }
+    s_tx_len = 0u;
+    tcp_output(s_client);
+    return true;
 }
 
 void modbus_boot_server_poll(void)
@@ -268,31 +307,45 @@ void modbus_boot_server_poll(void)
         return;
     }
 
-    /* Only feed the parser once a whole MBAP frame is buffered, so a
-     * TCP-fragmented request is never partially consumed (see
-     * rx_has_full_frame()). */
-    if (!rx_has_full_frame()) {
+    uint32_t now = HAL_GetTick();
+    if (now - s_last_request >= CLIENT_IDLE_MS) {
+        close_client();
         return;
     }
-
-    s_tx_len = 0;
-
-    nmbs_error e = nmbs_server_poll(&s_nmbs);
-
-    /* Flush any response accumulated in s_tx_buf. */
-    if (s_tx_len > 0u && s_client != NULL) {
-        err_t werr = tcp_write(s_client, s_tx_buf, s_tx_len, TCP_WRITE_FLAG_COPY);
-        if (werr == ERR_OK) {
-            tcp_output(s_client);
+    if (!flush_response()) return;
+    /* Only feed the parser once a whole MBAP frame is buffered, so a
+     * TCP-fragmented request is never partially consumed. */
+    int size = rx_frame_size();
+    if (size < 0) {
+        close_client();
+        return;
+    }
+    if (size == 0) {
+        if (s_rx_count != 0u) {
+            if (!s_frame_waiting) {
+                s_frame_since = now;
+                s_frame_waiting = true;
+            } else if (now - s_frame_since >= FRAME_TIMEOUT_MS) {
+                close_client();
+            }
         }
-        s_tx_len = 0;
+        return;
     }
-
-    /* Transport-level errors (nmbs_error < 0) mean the byte stream is out of
-     * sync; Modbus exceptions (> 0) are valid answered responses. On a
-     * transport error, discard buffered bytes to resynchronise on the next
-     * frame instead of staying stuck. */
+    s_frame_waiting = false;
+    s_frame_left = (uint16_t)size;
+    nmbs_error e = nmbs_server_poll(&s_nmbs);
+    /* Transport-level errors close the connection. Modbus exceptions are
+     * valid responses; discard only the remainder of that bounded ADU. */
     if (e < NMBS_ERROR_NONE) {
-        rx_flush();
+        close_client();
+        return;
     }
+    uint8_t ignored;
+    while (s_frame_left != 0u) {
+        rx_get(&ignored);
+        s_frame_left--;
+    }
+    tcp_recved(s_client, (uint16_t)size);
+    s_last_request = HAL_GetTick();
+    flush_response();
 }

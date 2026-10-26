@@ -22,7 +22,7 @@ extern "C" {
 #define META_STRUCT_VERSION     1u
 
 /* Maximum number of blocks we can track with a bitmap.
- * 384 KB / 240 B  ~= 1639 blocks => 205 bytes of bitmap.
+ * 256 KB / 240 B  ~= 1093 blocks => 137 bytes of bitmap.
  * We round up to 256 bytes for alignment.
  */
 #define META_BITMAP_BYTES       256u
@@ -74,6 +74,7 @@ void     metadata_reset(metadata_t *m);
 void     metadata_bitmap_set(metadata_t *m, uint32_t block_index);
 bool     metadata_bitmap_get(const metadata_t *m, uint32_t block_index);
 bool     metadata_all_blocks_received(const metadata_t *m);
+bool     metadata_params_valid(const metadata_t *m);
 
 #ifdef __cplusplus
 }

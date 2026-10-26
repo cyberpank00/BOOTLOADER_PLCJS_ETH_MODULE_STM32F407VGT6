@@ -10,18 +10,29 @@
 
 bool app_validate_vectors(uint32_t app_base)
 {
+    return app_validate_vectors_at(app_base, APP_FLASH_SIZE);
+}
+
+bool app_validate_vectors_at(uint32_t app_base, uint32_t image_size)
+{
+    if ((app_base != APP_FLASH_BASE && app_base != STAGING_FLASH_BASE) ||
+        image_size < FW_HEADER_OFFSET + sizeof(fw_header_t) ||
+        image_size > APP_FLASH_SIZE)
+        return false;
     const uint32_t *vectors = (const uint32_t *)app_base;
 
     uint32_t msp           = vectors[0];
     uint32_t reset_handler  = vectors[1];
 
     /* MSP must point into RAM */
-    if (msp < RAM_BASE || msp > (RAM_BASE + RAM_SIZE)) {
+    if (msp <= RAM_BASE || msp > BOOT_REQUEST_FLAG_ADDR || (msp & 7u) != 0u) {
         return false;
     }
 
     /* Reset_Handler must point into the application Flash region */
-    if (reset_handler < app_base || reset_handler >= APP_FLASH_END) {
+    uint32_t target = reset_handler & ~1u;
+    if ((reset_handler & 1u) == 0u || target < APP_FLASH_BASE ||
+        target - APP_FLASH_BASE > image_size - 2u) {
         return false;
     }
 
@@ -37,11 +48,18 @@ bool app_read_header(uint32_t app_base, fw_header_t *hdr)
 bool app_validate_full(uint32_t app_base, uint32_t expected_size,
                        uint32_t expected_crc)
 {
-    if (!app_validate_vectors(app_base)) {
+    return app_validate_image(app_base, expected_size, expected_crc);
+}
+
+bool app_validate_image(uint32_t app_base, uint32_t expected_size,
+                        uint32_t expected_crc)
+{
+    if (!app_validate_vectors_at(app_base, expected_size)) {
         return false;
     }
 
-    if (expected_size == 0u || expected_size > APP_FLASH_SIZE) {
+    if (!app_validate_header(app_base, PRODUCT_ID_DEFAULT,
+                             HW_REVISION_DEFAULT_U16)) {
         return false;
     }
 
@@ -57,7 +75,7 @@ bool app_validate_header(uint32_t app_base,
     if (!app_read_header(app_base, &hdr)) {
         return false;  /* magic mismatch -- no valid header */
     }
-    if (hdr.product_id != expected_product_id) {
+    if (hdr.product_id != expected_product_id || hdr.vector_table_offset != 0u) {
         return false;
     }
     /* Compare major byte only: (revision >> 8).

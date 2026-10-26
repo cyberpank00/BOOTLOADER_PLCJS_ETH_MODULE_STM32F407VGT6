@@ -40,11 +40,15 @@ cmake --build build
 `PRODUCT_ID_DEFAULT` / `HW_REVISION_DEFAULT` compile definitions consumed by
 `flash_map.h`. Defaults are the 12DI values (`0x504C1201`, `0x010101`).
 
-`scripts/make_metadata.ps1` produces the OTA metadata (image size + CRC32) that
-accompanies a `.bin` — the header does **not** carry them.
+`scripts/make_metadata.ps1` produces a 340-byte sector-5 record for offline SWD
+seeding of an already flashed application. It is not the OTA transport metadata
+generator. Image size and CRC travel as OTA parameters, outside the image header.
 
-No host-side unit tests. "Verified" means it compiles and, for anything touching
-the update path, that a real OTA cycle was run against hardware.
+Host tests live in `tests/`: configure with a native C compiler using
+`cmake -S tests -B build/host-tests -G Ninja -DCMAKE_C_COMPILER=gcc`, build, then
+`ctest --test-dir build/host-tests --output-on-failure`. Node tests:
+`node --test tests/test_client.mjs`. Flash/power-cut tests use mapped host memory,
+not hardware. "Hardware verified" still requires a real OTA/power-cut campaign.
 
 ### Node helpers (`tools/`)
 - `fw_update.mjs` — reference OTA client: PDP discovery, then
@@ -138,7 +142,7 @@ because `0x010101` truncates to `0x0101` by coincidence).
 
 **Mandatory.** Every change to bootloader behaviour ships with
 `BOOTLOADER_VERSION` in `Application/flash/flash_map.h` incremented by one minor
-(`0x00000107` → `0x00000108`). It is reported over Modbus (IR `0x0002`), so it is
+(`0x00000108` → `0x00000109`). It is reported over Modbus (IR `0x0002`), so it is
 the only way to identify which bootloader is on a board that will not boot its
 application — an un-bumped change is a defect.
 
@@ -164,6 +168,28 @@ Identity is validated at BEGIN, and the image is validated again after install
 (`BOOT_VERIFY_APP`). Never shorten that to a single check: a mid-install power
 loss must leave the device recoverable in the bootloader, not booting a
 half-written application.
+
+BL 1.8 invariants:
+- FINALIZE persists verified staging, never install intent. Reset waits for
+  INSTALL; legacy FINALIZE-only flags are normalized in RAM. Only a durably
+  started install is automatically retried, from the beginning of staging.
+- Network initialization precedes every recovery/installer path. Mandatory
+  metadata saves/read-back gate erase and successful completion. The single
+  metadata sector is still not power-fail atomic; invalid records enter recovery.
+- Installation/final verification locks modifying Modbus commands (exception 6)
+  and PDP SET_NET/REBOOT. PDP mutations also require an exact nonzero target MAC.
+- Block size 4..240, multiple of four; count/last length must match image size.
+  Read-back precedes bitmap marking; identical duplicates do not program/count
+  again. Finalization checks the complete bitmap and exact image CRC.
+- MAC is appended at IR `0x0019..0x001B`, high byte first. Existing offsets stay
+  fixed. Node/Qt select through PDP and verify MAC on the actual TCP connection
+  before mutations and after reconnect. Protected writes require BL 1.8+.
+- One client, no active-client eviction: 30 s idle, 5 s incomplete ADU, keepalive.
+  Disconnect does not cancel installation. RX is bounded by an ADU/window; TX
+  responses are retained on ERR_MEM.
+- Ethernet TX is synchronous with descriptor release. Failure quarantines the
+  buffer until MAC/DMA recovery, without KSZ reset. The app jump stops TIM7/DMA
+  and disables SysTick after RCC deinit; the MSP handoff is an assembly trampoline.
 
 ## Gotchas
 

@@ -26,7 +26,7 @@ MEMORY
 _estack = ORIGIN(RAM) + LENGTH(RAM);
 _sstack = _estack - _Min_Stack_Size;
 _Min_Heap_Size  = 0x200;
-_Min_Stack_Size = 0x400;
+_Min_Stack_Size = 0x1000;
 
 SECTIONS
 {

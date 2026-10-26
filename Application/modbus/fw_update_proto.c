@@ -9,6 +9,7 @@
 #include "crc32.h"
 #include "app_validate.h"
 #include "boot_state.h"
+#include "net_id.h"
 #include <string.h>
 
 /* ---- Private helpers ---------------------------------------------------- */
@@ -53,7 +54,8 @@ static bool        s_install_req;
 void fw_proto_init(metadata_t *meta)
 {
     s_meta       = meta;
-    s_cmd_status = CMD_STATUS_IDLE;
+    s_cmd_status = meta->install_in_progress ? CMD_STATUS_BUSY :
+                   meta->last_error != BOOT_ERR_NONE ? CMD_STATUS_ERROR : CMD_STATUS_IDLE;
     s_reboot_req = false;
     s_install_req = false;
     memset(s_params, 0, sizeof(s_params));
@@ -61,6 +63,26 @@ void fw_proto_init(metadata_t *meta)
 }
 
 /* ---- Command execution -------------------------------------------------- */
+static bool commit_metadata(const metadata_t *next)
+{
+    if (!metadata_save(next)) {
+        s_meta->last_error = BOOT_ERR_FLASH_WRITE;
+        s_cmd_status = CMD_STATUS_ERROR;
+        return false;
+    }
+    *s_meta = *next;
+    return true;
+}
+
+bool fw_proto_busy(void)
+{
+    return s_meta == NULL || s_install_req || s_reboot_req ||
+           s_meta->boot_state == BOOT_PREPARE_UPDATE ||
+           s_meta->boot_state == BOOT_INSTALL_FW ||
+           s_meta->boot_state == BOOT_VERIFY_APP ||
+           s_meta->boot_state == BOOT_READY_TO_BOOT;
+}
+
 static void exec_begin_update(void)
 {
     uint32_t image_size  = regs_to_u32(&s_params[0x10]);
@@ -84,51 +106,55 @@ static void exec_begin_update(void)
         s_cmd_status = CMD_STATUS_ERROR;
         return;
     }
-    if (image_size == 0u || image_size > STAGING_FLASH_SIZE) {
+    if (image_size < FW_HEADER_OFFSET + sizeof(fw_header_t) || image_size > STAGING_FLASH_SIZE) {
         s_meta->last_error = BOOT_ERR_IMAGE_TOO_LARGE;
         s_cmd_status = CMD_STATUS_ERROR;
         return;
     }
-    if (block_size == 0u || block_size > FW_MAX_BLOCK_SIZE) {
+    if (block_size == 0u || block_size > FW_MAX_BLOCK_SIZE || (block_size & 3u) != 0u) {
         s_meta->last_error = BOOT_ERR_BAD_PARAMS;
         s_cmd_status = CMD_STATUS_ERROR;
         return;
     }
-    if (block_count == 0u || block_count > META_MAX_BLOCKS) {
+    if (block_count != (image_size + block_size - 1u) / block_size ||
+        block_count > META_MAX_BLOCKS) {
         s_meta->last_error = BOOT_ERR_BAD_PARAMS;
         s_cmd_status = CMD_STATUS_ERROR;
         return;
     }
+
+    metadata_t next = *s_meta;
+    next.image_size          = image_size;
+    next.image_crc32         = image_crc;
+    next.fw_version          = fw_ver;
+    next.product_id          = product_id;
+    next.hw_revision         = hw_rev;
+    next.block_size          = block_size;
+    next.block_count         = block_count;
+    next.received_block_count = 0u;
+    next.staging_valid        = 0u;
+    next.install_requested    = 0u;
+    next.install_in_progress  = 0u;
+    next.boot_state           = (uint32_t)BOOT_PREPARE_UPDATE;
+    next.last_error           = (uint32_t)BOOT_ERR_NONE;
+    memset(next.block_bitmap, 0, sizeof(next.block_bitmap));
+    if (!commit_metadata(&next)) return;
 
     /* Erase staging area */
     uint32_t nsectors = STAGING_LAST_SECTOR - STAGING_FIRST_SECTOR + 1u;
     if (!flash_if_erase_sectors(STAGING_FIRST_SECTOR, nsectors)) {
+        s_meta->boot_state = BOOT_ERROR;
         s_meta->last_error = BOOT_ERR_FLASH_ERASE;
         s_cmd_status = CMD_STATUS_ERROR;
         return;
     }
-
-    s_meta->image_size          = image_size;
-    s_meta->image_crc32         = image_crc;
-    s_meta->fw_version          = fw_ver;
-    s_meta->product_id          = product_id;
-    s_meta->hw_revision         = hw_rev;
-    s_meta->block_size          = block_size;
-    s_meta->block_count         = block_count;
-    s_meta->received_block_count = 0u;
-    s_meta->staging_valid        = 0u;
-    s_meta->install_requested    = 0u;
-    s_meta->boot_state           = (uint32_t)BOOT_RECEIVE_FW;
-    s_meta->last_error           = (uint32_t)BOOT_ERR_NONE;
-    memset(s_meta->block_bitmap, 0, sizeof(s_meta->block_bitmap));
-    metadata_save(s_meta);
-
+    s_meta->boot_state = BOOT_RECEIVE_FW;
     s_cmd_status = CMD_STATUS_OK;
 }
 
 static void exec_write_block(uint16_t reg_qty)
 {
-    if (s_meta->boot_state != (uint32_t)BOOT_RECEIVE_FW) {
+    if (s_meta->boot_state != (uint32_t)BOOT_RECEIVE_FW || !metadata_params_valid(s_meta)) {
         s_meta->last_error = BOOT_ERR_BAD_PARAMS;
         s_cmd_status = CMD_STATUS_ERROR;
         return;
@@ -162,8 +188,10 @@ static void exec_write_block(uint16_t reg_qty)
     }
 
     uint32_t offset = block_idx * (uint32_t)s_meta->block_size;
-    if (offset + data_len > STAGING_FLASH_SIZE) {
-        s_meta->last_error = BOOT_ERR_IMAGE_TOO_LARGE;
+    uint32_t remaining = s_meta->image_size - offset;
+    uint32_t expected = remaining < s_meta->block_size ? remaining : s_meta->block_size;
+    if (data_len != expected || reg_qty != need_regs) {
+        s_meta->last_error = BOOT_ERR_BAD_PARAMS;
         s_cmd_status = CMD_STATUS_ERROR;
         return;
     }
@@ -175,23 +203,33 @@ static void exec_write_block(uint16_t reg_qty)
     uint8_t data_bytes[FW_MAX_BLOCK_SIZE];
     regs_to_bytes(&s_block_buf[3], data_bytes, data_len);
 
+    if (metadata_bitmap_get(s_meta, block_idx)) {
+        bool same = memcmp((const void *)(STAGING_FLASH_BASE + offset), data_bytes, data_len) == 0;
+        s_meta->last_error = same ? BOOT_ERR_NONE : BOOT_ERR_BAD_PARAMS;
+        s_cmd_status = same ? CMD_STATUS_OK : CMD_STATUS_ERROR;
+        return;
+    }
     if (!flash_if_write(STAGING_FLASH_BASE + offset, data_bytes, data_len)) {
         s_meta->last_error = BOOT_ERR_FLASH_WRITE;
         s_cmd_status = CMD_STATUS_ERROR;
         return;
     }
-
-    if (!metadata_bitmap_get(s_meta, block_idx)) {
-        metadata_bitmap_set(s_meta, block_idx);
-        s_meta->received_block_count++;
+    if (memcmp((const void *)(STAGING_FLASH_BASE + offset), data_bytes, data_len) != 0) {
+        s_meta->last_error = BOOT_ERR_BLOCK_CRC;
+        s_cmd_status = CMD_STATUS_ERROR;
+        return;
     }
 
+    metadata_bitmap_set(s_meta, block_idx);
+    s_meta->received_block_count++;
+    s_meta->last_error = BOOT_ERR_NONE;
     s_cmd_status = CMD_STATUS_OK;
 }
 
 static void exec_finalize(void)
 {
-    if (!metadata_all_blocks_received(s_meta)) {
+    if ((s_meta->boot_state != BOOT_RECEIVE_FW && s_meta->boot_state != BOOT_VERIFY_STAGING) ||
+        !metadata_all_blocks_received(s_meta)) {
         s_meta->last_error = BOOT_ERR_BAD_PARAMS;
         s_cmd_status = CMD_STATUS_ERROR;
         return;
@@ -214,19 +252,27 @@ static void exec_finalize(void)
         s_cmd_status = CMD_STATUS_ERROR;
         return;
     }
+    if (!app_validate_vectors_at(STAGING_FLASH_BASE, s_meta->image_size)) {
+        s_meta->last_error = BOOT_ERR_APP_VALIDATE;
+        s_cmd_status = CMD_STATUS_ERROR;
+        return;
+    }
 
-    s_meta->staging_valid     = 1u;
-    s_meta->install_requested = 1u;
-    s_meta->boot_state        = (uint32_t)BOOT_VERIFY_STAGING;
-    s_meta->last_error        = (uint32_t)BOOT_ERR_NONE;
-    metadata_save(s_meta);
+    metadata_t next = *s_meta;
+    next.staging_valid       = 1u;
+    next.install_requested   = 0u;
+    next.install_in_progress = 0u;
+    next.boot_state          = (uint32_t)BOOT_VERIFY_STAGING;
+    next.last_error          = (uint32_t)BOOT_ERR_NONE;
+    if (!commit_metadata(&next)) return;
 
     s_cmd_status = CMD_STATUS_OK;
 }
 
 static void exec_install(void)
 {
-    if (!s_meta->staging_valid || !s_meta->install_requested) {
+    if (!s_meta->staging_valid ||
+        (s_meta->boot_state != BOOT_VERIFY_STAGING && s_meta->boot_state != BOOT_ERROR)) {
         s_meta->last_error = BOOT_ERR_BAD_PARAMS;
         s_cmd_status = CMD_STATUS_ERROR;
         return;
@@ -237,13 +283,18 @@ static void exec_install(void)
 
 static void exec_abort(void)
 {
-    s_meta->boot_state           = (uint32_t)BOOT_WAIT_COMMAND;
-    s_meta->install_requested    = 0u;
-    s_meta->staging_valid        = 0u;
-    s_meta->received_block_count = 0u;
-    s_meta->last_error           = (uint32_t)BOOT_ERR_NONE;
-    memset(s_meta->block_bitmap, 0, sizeof(s_meta->block_bitmap));
-    metadata_save(s_meta);
+    metadata_t next = *s_meta;
+    next.boot_state           = (uint32_t)BOOT_WAIT_COMMAND;
+    next.install_requested    = 0u;
+    next.install_in_progress  = 0u;
+    next.staging_valid        = 0u;
+    next.received_block_count = 0u;
+    next.block_count          = 0u;
+    next.image_size           = 0u;
+    next.image_crc32          = 0u;
+    next.last_error           = (uint32_t)BOOT_ERR_NONE;
+    memset(next.block_bitmap, 0, sizeof(next.block_bitmap));
+    if (!commit_metadata(&next)) return;
 
     s_cmd_status = CMD_STATUS_OK;
 }
@@ -318,8 +369,12 @@ nmbs_error fw_proto_read_input_regs(uint16_t addr, uint16_t qty,
         }
         u32_to_regs(app_pid, &ir[0x17]);                  /* ir[0x17-0x18] */
     }
+    uint8_t mac[6];
+    net_id_get_mac(mac);
+    for (uint32_t i = 0; i < 3u; i++)
+        ir[0x19u + i] = ((uint16_t)mac[2u * i] << 8u) | mac[2u * i + 1u];
 
-    if (addr + qty > 0x20u) {
+    if (qty == 0u || addr + qty > 0x20u) {
         return NMBS_EXCEPTION_ILLEGAL_DATA_ADDRESS;
     }
     memcpy(out, &ir[addr], qty * sizeof(uint16_t));
@@ -329,7 +384,7 @@ nmbs_error fw_proto_read_input_regs(uint16_t addr, uint16_t qty,
 nmbs_error fw_proto_read_holding_regs(uint16_t addr, uint16_t qty,
                                       uint16_t *out)
 {
-    if (addr < 0x20u && addr + qty <= 0x20u) {
+    if (qty != 0u && addr < 0x20u && addr + qty <= 0x20u) {
         memcpy(out, &s_params[addr], qty * sizeof(uint16_t));
         return NMBS_ERROR_NONE;
     }
@@ -339,10 +394,12 @@ nmbs_error fw_proto_read_holding_regs(uint16_t addr, uint16_t qty,
 nmbs_error fw_proto_write_holding_regs(uint16_t addr, uint16_t qty,
                                        const uint16_t *in)
 {
+    if (fw_proto_busy()) return NMBS_EXCEPTION_SERVER_DEVICE_BUSY;
+    if (qty == 0u) return NMBS_EXCEPTION_ILLEGAL_DATA_VALUE;
     /* Block data region (0x0100+) */
     if (addr >= 0x0100u) {
         uint16_t off = addr - 0x0100u;
-        if (off + qty > 128u) {
+        if (off != 0u || qty < 4u || qty > 123u) {
             return NMBS_EXCEPTION_ILLEGAL_DATA_ADDRESS;
         }
         memcpy(&s_block_buf[off], in, qty * sizeof(uint16_t));

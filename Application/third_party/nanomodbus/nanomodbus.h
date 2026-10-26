@@ -61,13 +61,14 @@ typedef enum nmbs_error {
     NMBS_EXCEPTION_ILLEGAL_DATA_ADDRESS = 2,  /**< Modbus exception 2 */
     NMBS_EXCEPTION_ILLEGAL_DATA_VALUE = 3,    /**< Modbus exception 3 */
     NMBS_EXCEPTION_SERVER_DEVICE_FAILURE = 4, /**< Modbus exception 4 */
+    NMBS_EXCEPTION_SERVER_DEVICE_BUSY = 6,
 } nmbs_error;
 
 /**
  * Return whether the nmbs_error is a modbus exception
  * @e nmbs_error to check
  */
-#define nmbs_error_is_exception(e) ((e) > 0 && (e) < 5)
+#define nmbs_error_is_exception(e) (((e) > 0 && (e) < 5) || (e) == NMBS_EXCEPTION_SERVER_DEVICE_BUSY)
 
 
 /**
@@ -149,6 +150,7 @@ typedef struct nmbs_t {
     struct {
         uint8_t buf[260];
         uint16_t buf_idx;
+        uint16_t tcp_end;
 
         uint8_t unit_id;
         uint8_t fc;

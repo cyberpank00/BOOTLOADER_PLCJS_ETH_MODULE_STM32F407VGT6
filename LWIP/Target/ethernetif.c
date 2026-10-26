@@ -29,6 +29,8 @@ static ETH_DMADescTypeDef  DMATxDscrTab[ETH_TX_DESC_CNT]
 
 static user_phy_Object_t   phyObj;
 static volatile uint8_t    s_frame_received;
+static uint8_t s_recover_pending;
+static uint32_t s_recover_at;
 
 /* ---- Rx slot tracking (maps DMA buffer pointer back to its pbuf) --------
  *
@@ -127,9 +129,7 @@ void HAL_ETH_RxLinkCallback(void **pStart, void **pEnd,
 /* ---- HAL ETH Tx callback ----------------------------------------------- */
 void HAL_ETH_TxFreeCallback(uint32_t *buff)
 {
-    /* pData was set to NULL in low_level_output — nothing to free here.
-     * Pbuf lifetime is managed by the LwIP stack in main-loop context,
-     * avoiding pool corruption from IRQ-context pbuf_free calls. */
+    /* The synchronous transmitter owns a static buffer, not a pbuf. */
     (void)buff;
 }
 
@@ -153,7 +153,14 @@ static void low_level_init(struct netif *netif)
     heth.Init.TxDesc         = DMATxDscrTab;
     heth.Init.RxBuffLen      = ETH_RX_BUF_SIZE;
 
-    HAL_ETH_Init(&heth);
+    netif->hwaddr_len = 6;
+    memcpy(netif->hwaddr, mac, 6);
+    netif->mtu = 1500;
+    netif->flags = NETIF_FLAG_BROADCAST | NETIF_FLAG_ETHARP;
+    if (HAL_ETH_Init(&heth) != HAL_OK) {
+        s_recover_pending = 1u;
+        return;
+    }
 
     memset(&TxConfig, 0, sizeof(TxConfig));
     TxConfig.Attributes   = ETH_TX_PACKETS_FEATURES_CSUM
@@ -177,7 +184,10 @@ static void low_level_init(struct netif *netif)
     USER_PHY_RegisterBusIO(&phyObj, &io);
     USER_PHY_Init(&phyObj);
 
-    HAL_ETH_Start_IT(&heth);
+    if (HAL_ETH_Start_IT(&heth) != HAL_OK) {
+        s_recover_pending = 1u;
+        netif_set_link_down(netif);
+    }
 }
 
 /* ---- Transmit ----------------------------------------------------------- */
@@ -185,15 +195,17 @@ static void low_level_init(struct netif *netif)
 /* Static TX buffer: the pbuf chain is copied here before handing off to the
  * DMA.  This decouples pbuf lifetime from the DMA transfer entirely:
  *   - No pbuf_ref() needed — the caller (LwIP) frees the pbuf normally.
- *   - TxFreeCallback becomes a no-op (pData = NULL).
+ *   - TxFreeCallback becomes a no-op (static storage).
  *   - No pbuf_free() from IRQ context → no pool corruption under
  *     SYS_LIGHTWEIGHT_PROT = 0.
  * Cost: one memcpy per TX frame + ETH_MAX_PACKET_SIZE (1528 B) of RAM. */
-static uint8_t s_tx_buf[ETH_MAX_PACKET_SIZE];
+static uint8_t s_tx_buf[ETH_MAX_PACKET_SIZE] __attribute__((aligned(4)));
 
 static err_t low_level_output(struct netif *netif, struct pbuf *p)
 {
     (void)netif;
+    if (s_recover_pending || HAL_ETH_GetState(&heth) != HAL_ETH_STATE_STARTED)
+        return ERR_IF;
 
     /* Flatten the pbuf chain into the static DMA buffer */
     uint16_t total = 0;
@@ -208,20 +220,43 @@ static err_t low_level_output(struct netif *netif, struct pbuf *p)
 
     TxConfig.Length   = total;
     TxConfig.TxBuffer = &buf;
-    TxConfig.pData    = NULL;   /* TxFreeCallback is a no-op */
+    TxConfig.pData    = s_tx_buf;   /* TxFreeCallback is a no-op */
+    heth.TxDescList.CurrentPacketAddress = (uint32_t *)s_tx_buf;
 
-    /* Wait for any previous TX to finish (typically < 100 us) */
-    uint32_t t = HAL_GetTick();
-    while (HAL_ETH_GetState(&heth) != HAL_ETH_STATE_STARTED) {
-        if (HAL_GetTick() - t > 50u) return ERR_IF;
+    /* Do not reuse the buffer until DMA has finished. On any failure, the
+     * main-loop recovery resets MAC/DMA before another transmission. */
+    if (HAL_ETH_Transmit(&heth, &TxConfig, 50u) != HAL_OK) {
+        s_recover_pending = 1u;
+        return ERR_IF;
     }
-
-    return (HAL_ETH_Transmit_IT(&heth, &TxConfig) == HAL_OK) ? ERR_OK : ERR_IF;
+    HAL_ETH_ReleaseTxPacket(&heth);
+    return ERR_OK;
 }
 
 /* ---- Receive ------------------------------------------------------------ */
 void ethernetif_input(struct netif *netif)
 {
+    if (s_recover_pending || HAL_ETH_GetState(&heth) == HAL_ETH_STATE_ERROR) {
+        s_recover_pending = 1u;
+        if ((int32_t)(HAL_GetTick() - s_recover_at) < 0) return;
+        netif_set_link_down(netif);
+        HAL_NVIC_DisableIRQ(ETH_IRQn);
+        __HAL_RCC_ETHMAC_FORCE_RESET();
+        __DSB();
+        __HAL_RCC_ETHMAC_RELEASE_RESET();
+        if (heth.RxDescList.pRxStart != NULL)
+            pbuf_free((struct pbuf *)heth.RxDescList.pRxStart);
+        for (uint32_t i = 0; i < ETH_RX_DESC_CNT; i++) {
+            if (s_rx_slots[i].p != NULL) pbuf_free(s_rx_slots[i].p);
+        }
+        memset(s_rx_slots, 0, sizeof(s_rx_slots));
+        memset(&heth, 0, sizeof(heth));
+        s_frame_received = 0u;
+        s_recover_pending = 0u;
+        low_level_init(netif);
+        s_recover_at = HAL_GetTick() + 1000u;
+        return;
+    }
     if (!s_frame_received) return;
     s_frame_received = 0;
 

@@ -86,6 +86,7 @@ static void msg_buf_reset(nmbs_t* nmbs) {
 
 static void msg_state_reset(nmbs_t* nmbs) {
     msg_buf_reset(nmbs);
+    nmbs->msg.tcp_end = 0;
     nmbs->msg.unit_id = 0;
     nmbs->msg.fc = 0;
     nmbs->msg.transaction_id = 0;
@@ -202,6 +203,11 @@ static uint16_t crc_calc(const uint8_t* data, uint32_t length) {
 
 
 static nmbs_error recv(nmbs_t* nmbs, uint32_t count) {
+    uint32_t end = (uint32_t)nmbs->msg.buf_idx + count;
+    if (end > sizeof(nmbs->msg.buf) ||
+        (nmbs->platform.transport == NMBS_TRANSPORT_TCP &&
+         nmbs->msg.tcp_end != 0 && end > nmbs->msg.tcp_end))
+        return NMBS_ERROR_TRANSPORT;
     uint32_t r = 0;
     while (r != count) {
         int ret = nmbs->platform.read_byte(nmbs->msg.buf + nmbs->msg.buf_idx + r, nmbs->byte_timeout_ms,
@@ -254,6 +260,9 @@ static nmbs_error recv_msg_footer(nmbs_t* nmbs) {
 
         if (recv_crc != crc)
             return NMBS_ERROR_TRANSPORT;
+    }
+    else if (nmbs->msg.buf_idx != nmbs->msg.tcp_end) {
+        return NMBS_ERROR_TRANSPORT;
     }
 
     DEBUG("\n");
@@ -314,15 +323,16 @@ static nmbs_error recv_msg_header(nmbs_t* nmbs, bool* first_byte_received) {
 
         nmbs->msg.transaction_id = get_2(nmbs);
         uint16_t protocol_id = get_2(nmbs);
-        uint16_t length = get_2(nmbs);    // We should actually check the length of the request against this value
+        uint16_t length = get_2(nmbs);
         nmbs->msg.unit_id = get_1(nmbs);
         nmbs->msg.fc = get_1(nmbs);
 
         if (protocol_id != 0)
             return NMBS_ERROR_TRANSPORT;
 
-        if (length > 255)
+        if (length < 2 || length > 254)
             return NMBS_ERROR_TRANSPORT;
+        nmbs->msg.tcp_end = (uint16_t)(6u + length);
     }
 
     return NMBS_ERROR_NONE;
@@ -708,6 +718,10 @@ static nmbs_error handle_write_multiple_coils(nmbs_t* nmbs) {
     uint16_t address = get_2(nmbs);
     uint16_t quantity = get_2(nmbs);
     uint8_t coils_bytes = get_1(nmbs);
+    if (quantity < 1 || quantity > 0x07B0 ||
+        coils_bytes != (quantity + 7u) / 8u ||
+        (uint32_t)address + quantity > 65536u)
+        return handle_exception(nmbs, NMBS_EXCEPTION_ILLEGAL_DATA_VALUE);
 
     DEBUG("a %d\tq %d\tb %d\tcoils ", address, quantity, coils_bytes);
 
@@ -735,7 +749,7 @@ static nmbs_error handle_write_multiple_coils(nmbs_t* nmbs) {
         if (coils_bytes == 0)
             return handle_exception(nmbs, NMBS_EXCEPTION_ILLEGAL_DATA_VALUE);
 
-        if ((quantity / 8) + 1 != coils_bytes)
+        if ((quantity + 7u) / 8u != coils_bytes)
             return handle_exception(nmbs, NMBS_EXCEPTION_ILLEGAL_DATA_VALUE);
 
         if (nmbs->callbacks.write_multiple_coils) {
@@ -778,6 +792,10 @@ static nmbs_error handle_write_multiple_registers(nmbs_t* nmbs) {
     uint16_t address = get_2(nmbs);
     uint16_t quantity = get_2(nmbs);
     uint8_t registers_bytes = get_1(nmbs);
+    if (quantity < 1 || quantity > 0x007B ||
+        registers_bytes != quantity * 2u ||
+        (uint32_t)address + quantity > 65536u)
+        return handle_exception(nmbs, NMBS_EXCEPTION_ILLEGAL_DATA_VALUE);
 
     DEBUG("a %d\tq %d\tb %d\tregs ", address, quantity, registers_bytes);
 
@@ -878,7 +896,7 @@ static nmbs_error handle_req_fc(nmbs_t* nmbs) {
             break;
 
         default:
-            err = NMBS_EXCEPTION_ILLEGAL_FUNCTION;
+            err = handle_exception(nmbs, NMBS_EXCEPTION_ILLEGAL_FUNCTION);
     }
 
     return err;

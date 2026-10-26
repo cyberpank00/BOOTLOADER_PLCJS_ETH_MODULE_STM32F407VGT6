@@ -13,7 +13,7 @@ application region, and then boots the main firmware.
 
 ## Current status
 
-This bootloader is integrated and tested with the paired application project:
+Current bootloader version: **1.8**. The memory contract is:
 
 - bootloader flash base: `0x08000000`
 - application flash base: `0x08040000`
@@ -21,7 +21,9 @@ This bootloader is integrated and tested with the paired application project:
 - staging area: `0x08080000 .. 0x080BFFFF` (256 KB contiguous window)
 - settings sector used by the application: `0x080C0000`
 
-Validated scenarios:
+Previous releases were exercised on hardware in these scenarios. Version 1.8
+has host regression tests and build verification; it still requires a new
+hardware OTA, power-cut and warm-reset campaign:
 
 - warm reset cycle `app -> bootloader -> app`
 - repeated handoff cycles without power cycling
@@ -63,12 +65,12 @@ Identity constants (defaults for the 12-DI/D4MG variant, CMake-configurable):
 |---|---|---|
 | `PRODUCT_ID_DEFAULT` | `0x504C1201` | `-DPRODUCT_ID=0x...` |
 | `HW_REVISION_DEFAULT` | `0x010101` | `-DHW_REVISION=0x...` |
-| `BOOTLOADER_VERSION` | `1.5` | — |
+| `BOOTLOADER_VERSION` | `1.8` | — |
 | `FW_MAX_BLOCK_SIZE` | `240` bytes | — |
 
 ## Network configuration
 
-The bootloader comes up on an **AutoIP link-local** address (RFC 3927),
+The bootloader comes up on a **deterministic link-local** address,
 derived deterministically from the chip UID in `LWIP/App/lwip.c` — the same
 scheme the applications use:
 
@@ -134,10 +136,10 @@ The bootloader stays active when one of the following is true:
 1. the application requested bootloader mode by writing `BOOT_REQUEST_MAGIC`
    into the reserved no-init RAM cell at `0x2001FFF0`
 2. installation was interrupted
-3. `install_requested` is set in metadata
+3. a verified staging image is awaiting INSTALL, or an error is pending
 4. firmware reception was in progress
 5. application is not valid
-6. application vectors fail quick validation
+6. application vectors, identity, size or CRC fail validation
 
 The software boot request is one-shot: the bootloader consumes the RAM flag and
 clears it on entry.
@@ -186,13 +188,16 @@ Frequently used input registers:
 - `IR[0x0000..0x0001]` - magic `0xB00710AD`
 - `IR[0x0004]` - boot state
 - `IR[0x0005]` - app valid
-- `IR[0x000B]` - last error
-- `IR[0x000C..0x000D]` - total block count
-- `IR[0x000E..0x000F]` - received block count
-- `IR[0x0010..0x0011]` - image size
-- `IR[0x0012..0x0013]` - image CRC32
-- `IR[0x0014]` - command status
-- `IR[0x0015]` - staging valid
+- `IR[0x000A..0x000B]` - HW revision, `(major<<16)|(minor<<8)|patch`
+- `IR[0x000C]` - last error
+- `IR[0x000D..0x000E]` - total block count
+- `IR[0x000F..0x0010]` - received block count
+- `IR[0x0011..0x0012]` - image size
+- `IR[0x0013..0x0014]` - image CRC32
+- `IR[0x0015]` - command status
+- `IR[0x0016]` - staging valid
+- `IR[0x0017..0x0018]` - installed application product ID
+- `IR[0x0019..0x001B]` - MAC, two bytes per register, high byte first (BL 1.8+)
 
 Command status values:
 
@@ -217,16 +222,17 @@ Known error codes:
 
 ## OTA client
 
-The reference CLI client is `tools/fw_update.mjs`. The legacy Python version is
-still available as `tools/fw_update.py`.
+The reference CLI client is `tools/fw_update.mjs` (Node 18+). The synchronized
+desktop client is ModbusTool 1.3.15+. The historical Python client is not a
+reference for the current MAC verification policy.
 
 Basic usage:
 
 ```bash
 node tools/fw_update.mjs status
-node tools/fw_update.mjs update path/to/app.bin
-node tools/fw_update.mjs abort
-node tools/fw_update.mjs reboot
+node tools/fw_update.mjs update path/to/app.bin --mac 02:00:12:34:56:78
+node tools/fw_update.mjs abort --mac 02:00:12:34:56:78
+node tools/fw_update.mjs reboot --mac 02:00:12:34:56:78
 node tools/fw_update.mjs app-bootloader
 ```
 
@@ -235,7 +241,10 @@ its address: `app-bootloader` learns the target MAC from the running app, then
 after the reset finds the bootloader by MAC via broadcast IDENTIFY. If the
 discovered (link-local) bootloader is on a different subnet than the host, the
 client reassigns it live to the desired IP with a discovery `SET_NET` and
-continues. `update` resolves the boot IP the same way. (Requires inbound
+continues. `update`, `abort` and `reboot` always resolve the selected MAC and
+verify it again through the actual TCP connection, including when the supplied
+IP already answers. Multiple bootloaders require an explicit MAC. An observed
+IP conflict stops the operation. (Requires inbound
 UDP:20556 in the host firewall — see the Discovery section.)
 
 Default client parameters:
@@ -251,12 +260,19 @@ Useful options:
 - `--nic <ip>` - local NIC to broadcast discovery from (multi-homed hosts)
 - `--mac <aa:bb:..>` - target MAC to disambiguate when several are present
 
+Protected writes require BL 1.8+ MAC registers; older BL versions remain
+readable with `status`, but there is no silent fallback for OTA. Upgrading the
+bootloader itself requires the separate SWD programming procedure. Image
+identity and firmware version come from its header; `--version 0xMMmm`, if
+supplied, must match it. MAC checking selects the device; it is not authentication.
+
 ## Entering bootloader from the main application
 
 The paired application enters bootloader mode by writing `0xB007` to holding
 register `118`, then performing a warm reset while preserving a shared RAM flag.
 
-Example with `pymodbus`:
+Low-level example with `pymodbus` (verify the application's MAC/IP through PDP
+first; the Node/Qt workflows do this automatically):
 
 ```python
 from pymodbus.client import ModbusTcpClient
@@ -270,19 +286,65 @@ client.close()
 In the validated setup:
 
 - main application responds on `192.168.1.10`
-- bootloader responds on `192.168.1.2`
+- bootloader defaults to UID-derived link-local; `192.168.1.2` is an example
+  address assigned through targeted PDP SET_NET, not a firmware default
 
 ## Recovery notes
 
-These operational details were confirmed during testing:
+Version 1.8 distinguishes upload from installation:
 
-- after a normal `BOOT_WAIT_COMMAND` session, `REBOOT` transfers control back to
-  the main application
-- after an interrupted or failed OTA session, use `ABORT_UPDATE` first, then
-  `REBOOT`, before expecting the device to return to the application
-- a failed `FINALIZE_UPDATE` due to CRC mismatch keeps `staging_valid = 0`
-- an interrupted upload leaves the bootloader in a safe state and prevents boot
-  into an incomplete application image
+- An interrupted upload leaves the old application intact. After an MCU reset,
+  start a new BEGIN and resend the image; the reception bitmap is only in RAM
+  until FINALIZE. ABORT then REBOOT returns to the old app only if it is valid.
+- FINALIZE verifies all blocks, the exact image CRC, header and vectors. It
+  saves a ready image and waits for INSTALL, including after reset. It does not
+  authorize automatic installation. Legacy FINALIZE-only metadata is treated
+  the same way.
+- INSTALL rechecks staging and persists `install_in_progress` and `app_valid=0`
+  before application erase. A reset during erase/copy restarts installation
+  from the beginning of verified staging, with networking initialized.
+- An install failure stops in network-accessible ERROR. BEGIN can replace the
+  image, or INSTALL can retry valid staging. ABORT cannot restore an erased app.
+- Mandatory metadata saves and their read-back are checked. Metadata still
+  occupies one erase sector: power loss during its rewrite can destroy the last
+  record. Invalid metadata enters network recovery; automatic resume is not
+  guaranteed in that case. Journaling is deferred; sectors 10/11 are untouched.
+- BEGIN, blocks, ABORT and REBOOT are blocked during installation/final checking
+  with Modbus exception 6. PDP SET_NET/REBOOT are also blocked and require a
+  nonzero target MAC. IDENTIFY remains available.
+
+Block size is 4..240 bytes, divisible by four; count must equal
+`ceil(image_size/block_size)`. Every non-final block has the configured size;
+the last has exactly the remainder. Write one complete block per FC16 at
+`0x0100`. An identical duplicate succeeds without programming/counting again;
+a changed duplicate fails. Read-back is compared before marking the bitmap.
+FINALIZE scans every expected bit and computes CRC over exactly `image_size`.
+
+The single TCP client is not evicted by a second connection. Idle timeout is
+30 seconds; incomplete ADUs time out after 5 seconds; TCP keepalive is enabled.
+Disconnect does not cancel a transfer or installation. RX uses backpressure;
+pending replies survive temporary TX queue exhaustion. Current clients start a
+fresh transfer with BEGIN after a failed upload; they do not automatically resume
+blocks. Flash erase can pause network processing, so updater request timeouts
+allow 15 seconds. Hardware timing remains to be measured.
+
+Ethernet TX waits for DMA completion; a timeout resets MAC/DMA before buffer
+reuse, without resetting the KSZ8863. The jump stops TIM7 and DMA, disables
+SysTick after RCC deinit, clears pending interrupts and branches through an
+assembly trampoline without C stack access after changing MSP.
+
+Host tests (native compiler, not the ARM toolchain):
+
+```sh
+cmake -S tests -B build/host-tests -G Ninja -DCMAKE_C_COMPILER=gcc
+cmake --build build/host-tests
+ctest --test-dir build/host-tests --output-on-failure
+node --test tests/test_client.mjs
+```
+
+Hardware acceptance still requires power cuts during metadata writes and every
+installer phase, malformed/fragmented TCP under load, multiple BLs, link loss,
+repeated app/BL jumps, and checking that settings/calibration remain unchanged.
 
 ## Ethernet reset fix
 
@@ -297,7 +359,7 @@ transitions.
 
 Project build system: `CMake + Ninja`.
 
-Default build (12-DI/D4MG, `PRODUCT_ID=0x12D1D4A0`, `HW_REVISION=1`):
+Default build (12DI, `PRODUCT_ID=0x504C1201`, `HW_REVISION=0x010101`):
 
 ```bash
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
@@ -387,19 +449,20 @@ The header struct is defined in `Application/validate/app_validate.h`:
 typedef struct __attribute__((packed)) {
     uint32_t magic;               /* 0x504C434A "PLCJ"             */
     uint32_t product_id;          /* must match PRODUCT_ID_DEFAULT  */
-    uint16_t hw_revision;         /* must match HW_REVISION_DEFAULT */
+    uint16_t hw_revision;         /* (major<<8)|minor; major must match */
     uint16_t reserved0;
     uint32_t fw_version;          /* informational                  */
-    uint32_t image_size;          /* total binary size in bytes     */
-    uint32_t image_crc32;         /* CRC32 with this field = 0      */
     uint32_t vector_table_offset; /* always 0                       */
     uint32_t reserved1[2];
 } fw_header_t;
 ```
 
-The paired application project places this header automatically via a
-dedicated linker section (`.fw_header`) and the `tools/gen_app_bin.py`
-post-build script that patches `image_size` and `image_crc32`.
+The paired application places the packed 28-byte header in `.fw_header`.
+Size and CRC are not header fields: they travel as OTA parameters.
+`scripts/make_metadata.ps1` creates a 340-byte sector-5 record for offline SWD
+seeding of an already flashed application; it does not create OTA transport
+parameters or modify the image. Header HW is 16-bit; board HW is 24-bit.
+Compare `(header.hw_revision >> 8)` with `(HW_REVISION_DEFAULT >> 16)`.
 
 **Validation chain** (three independent checks):
 
@@ -409,12 +472,13 @@ post-build script that patches `image_size` and `image_crc32`.
 | `INST_VERIFYING` | `fw_installer.c` | header in **app** flash after copy |
 | `BOOT_VERIFY_APP` | `boot_main.c` | header in **app** flash before jump |
 
-If any check fails, the error code `PRODUCT_MISMATCH` (1) is returned and
-the bootloader enters `BOOT_ERROR` state.
+Checks report the relevant error (identity, CRC, vectors, Flash or parameters);
+failure before installation leaves the existing application untouched.
 
 ## Known limitations
 
-- bootloader IP is fixed and hardcoded
+- link-local addressing is deterministic, without duplicate-address negotiation;
+  resolve observed conflicts with individually targeted PDP addressing
 - no watchdog is enabled in the bootloader
 - no authentication or access control is implemented for OTA commands
 - only one Modbus TCP client can be connected at a time

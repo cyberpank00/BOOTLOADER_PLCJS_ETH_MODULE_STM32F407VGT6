@@ -29,7 +29,7 @@ extern "C" {
  *   minor — increments on firmware-only changes
  *
  * Bootloader OTA acceptance rule:
- *   product_id exact match  AND  (header.hw_revision >> 8) == (HW_REVISION_DEFAULT >> 8)
+ *   product_id exact match  AND  (header.hw_revision >> 8) == (HW_REVISION_DEFAULT >> 16)
  *
  * CRC32 and image_size are NOT stored in the header — they come from OTA metadata.
  */
@@ -44,9 +44,12 @@ typedef struct __attribute__((packed)) {
     uint32_t vector_table_offset;/* usually 0                            */
     uint32_t reserved1[2];
 } fw_header_t;
+_Static_assert(sizeof(fw_header_t) == 28u, "Firmware header contract");
 
 /** Quick check: MSP and Reset_Handler point to valid memory ranges. */
 bool app_validate_vectors(uint32_t app_base);
+bool app_validate_vectors_at(uint32_t storage_base, uint32_t image_size);
+bool app_validate_image(uint32_t storage_base, uint32_t image_size, uint32_t crc);
 
 /** Full validation: vectors + header + CRC32 of the whole image. */
 bool app_validate_full(uint32_t app_base, uint32_t expected_size,

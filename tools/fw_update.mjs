@@ -23,13 +23,17 @@
  *   --boot-ip <addr>   Bootloader IP        (default 192.168.1.2)
  *   --app-ip <addr>    Application IP       (default 192.168.1.10)
  *   --port <n>         Modbus TCP port      (default 502)
- *   --version <hex>    FW version 0xMMmmpp  (default 0x00010000), for `update`
+ *   --mac <address>    Selected device MAC (required if several BLs reply)
+ *   --nic <addr>       Local IPv4 adapter for PDP discovery
+ *   --version <hex>    Optional check against embedded FW version (0xMMmm)
  */
 
 import net from 'node:net';
 import dgram from 'node:dgram';
 import { readFile } from 'node:fs/promises';
 import process from 'node:process';
+import { pathToFileURL } from 'node:url';
+import { randomInt } from 'node:crypto';
 
 // ---------------------------------------------------------------------------
 // Target configuration
@@ -66,7 +70,9 @@ const IR_IMAGE_CRC_HI = 0x0013;
 const IR_CMD_STATUS = 0x0015;
 const IR_STAGING_VALID = 0x0016;
 const IR_APP_PRODUCT_ID_HI = 0x0017; // installed app product_id (0x17-0x18)
-const IR_COUNT = 0x0019; // total registers to read (through 0x18)
+const IR_COUNT = 0x0019; // legacy status, readable on earlier bootloaders
+const IR_MAC = 0x0019;
+const IR_COUNT_WITH_MAC = 0x001c;
 
 // ---------------------------------------------------------------------------
 // Holding Register map (FC03/FC16, base 0x0000) - read/write
@@ -153,6 +159,13 @@ function crc32(data) {
 // Minimal Modbus TCP client
 // ---------------------------------------------------------------------------
 class ModbusError extends Error {}
+class TargetError extends Error {}
+class ModbusException extends ModbusError {
+  constructor(code, func) {
+    super(`Modbus exception ${code} for function ${func}`);
+    this.code = code;
+  }
+}
 
 class ModbusTcpClient {
   /** @param {string} ip @param {number} port @param {number} unitId @param {number} timeoutMs */
@@ -172,11 +185,14 @@ class ModbusTcpClient {
   connect() {
     return new Promise((resolve, reject) => {
       const sock = net.createConnection({ host: this.ip, port: this.port });
+      this.socket = sock;
       const onError = (err) => reject(err);
       sock.once('error', onError);
+      sock.setTimeout(this.timeoutMs, () => sock.destroy(new ModbusError('Connection timeout')));
       sock.setNoDelay(true);
       sock.once('connect', () => {
         sock.removeListener('error', onError);
+        sock.setTimeout(0);
         this.socket = sock;
         sock.on('data', (chunk) => this._onData(chunk));
         sock.on('error', (err) => this._failAll(err));
@@ -187,6 +203,7 @@ class ModbusTcpClient {
   }
 
   close() {
+    this._failAll(new ModbusError('connection closed'));
     if (this.socket) {
       this.socket.removeAllListeners();
       this.socket.destroy();
@@ -206,6 +223,12 @@ class ModbusTcpClient {
     // Parse as many complete MBAP frames as available.
     while (this.rxBuf.length >= 7) {
       const len = this.rxBuf.readUInt16BE(4); // unit id + PDU bytes
+      if (len < 2 || len > 254 || this.rxBuf.readUInt16BE(2) !== 0 ||
+          this.rxBuf[6] !== this.unitId) {
+        this._failAll(new ModbusError('Invalid Modbus TCP response'));
+        this.close();
+        return;
+      }
       const total = 6 + len;
       if (this.rxBuf.length < total) break;
       const frame = this.rxBuf.subarray(0, total);
@@ -259,7 +282,7 @@ class ModbusTcpClient {
     const func = pdu.readUInt8(0);
     if (func === (expectedFunc | 0x80)) {
       const exc = pdu.readUInt8(1);
-      throw new ModbusError(`Modbus exception ${exc} for function ${expectedFunc}`);
+      throw new ModbusException(exc, expectedFunc);
     }
     if (func !== expectedFunc) {
       throw new ModbusError(`Unexpected function ${func} (expected ${expectedFunc})`);
@@ -275,6 +298,8 @@ class ModbusTcpClient {
     const resp = await this._request(pdu);
     this._checkException(resp, 0x04);
     const byteCount = resp.readUInt8(1);
+    if (byteCount !== qty * 2 || resp.length !== 2 + byteCount)
+      throw new ModbusError('Invalid register response length');
     const regs = [];
     for (let i = 0; i < byteCount / 2; i++) regs.push(resp.readUInt16BE(2 + i * 2));
     return regs;
@@ -331,8 +356,42 @@ function bytesToRegs(data) {
 }
 
 /** @param {ModbusTcpClient} c */
-async function readInputRegs(c) {
-  return c.readInputRegisters(0, IR_COUNT);
+async function readInputRegs(c, withMac = false) {
+  return c.readInputRegisters(0, withMac ? IR_COUNT_WITH_MAC : IR_COUNT);
+}
+
+function normalizeMac(mac) {
+  const value = String(mac ?? '').trim().toLowerCase().replaceAll('-', ':');
+  if (!/^([0-9a-f]{2}:){5}[0-9a-f]{2}$/.test(value) ||
+      value === '00:00:00:00:00:00' || (parseInt(value.slice(0, 2), 16) & 1))
+    throw new TargetError('A valid unicast target MAC is required');
+  return value;
+}
+
+async function verifyBootloaderIdentity(c, expectedMac) {
+  expectedMac = normalizeMac(expectedMac);
+  const regs = await readInputRegs(c, true);
+  if (u32FromRegs(regs, IR_MAGIC_HI) !== BOOTLOADER_MAGIC)
+    throw new TargetError('The connected device is not a bootloader');
+  if (u32FromRegs(regs, IR_VERSION_HI) < 0x0108 ||
+      regs.slice(IR_MAC, IR_COUNT_WITH_MAC).every((r) => r === 0))
+    throw new TargetError('This bootloader does not support MAC verification (requires BL 1.8+)');
+  const bytes = regs.slice(IR_MAC, IR_COUNT_WITH_MAC).flatMap((r) => [r >>> 8, r & 255]);
+  const actual = normalizeMac(bytes.map((b) => b.toString(16).padStart(2, '0')).join(':'));
+  if (actual !== expectedMac)
+    throw new TargetError(`MAC mismatch: selected ${expectedMac}, connected ${actual}`);
+  return regs;
+}
+
+function selectBootloader(devices, expectedMac) {
+  const mac = expectedMac ? normalizeMac(expectedMac) : null;
+  const candidates = devices.filter((d) => d.inBoot && (!mac || d.mac === mac));
+  if (candidates.length > 1)
+    throw new TargetError('Multiple bootloaders found; select a device with --mac');
+  const selected = candidates[0] ?? null;
+  if (selected && devices.some((d) => d.ip === selected.ip && d.mac !== selected.mac))
+    throw new TargetError(`IP conflict at ${selected.ip}; assign unique addresses before updating`);
+  return selected;
 }
 
 /**
@@ -379,13 +438,18 @@ function pdpBuildIdentify(txid) {
 }
 
 function pdpParseIdentify(buf) {
-  if (buf.length < 16 || buf.toString('ascii', 0, 4) !== 'PLCD') return null;
+  if (buf.length !== 54 || buf.toString('ascii', 0, 4) !== 'PLCD' ||
+      buf[4] !== PDP_VER || buf.readUInt16BE(14) !== 38) return null;
   const opcode = buf[5];
   if (opcode !== (PDP_OP_IDENTIFY | PDP_RESP)) return null;
   const p = buf.subarray(16);
   if (p.length < 38) return null;
+  let mac;
+  try {
+    mac = normalizeMac([...buf.subarray(8, 14)].map((x) => x.toString(16).padStart(2, '0')).join(':'));
+  } catch { return null; }
   return {
-    mac: [...buf.subarray(8, 14)].map((x) => x.toString(16).padStart(2, '0')).join(':'),
+    mac,
     productId: p.readUInt32BE(0),
     fw: p.readUInt16BE(6),
     netMode: p[8],
@@ -396,28 +460,31 @@ function pdpParseIdentify(buf) {
 
 /** Broadcast IDENTIFY from `nicIp` (null = OS default) and collect responders. */
 function pdpDiscover(nicIp, timeoutMs = 1500) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const found = new Map();
+    const txid = randomInt(0x10000);
     const rx = dgram.createSocket({ type: 'udp4', reuseAddr: true });
-    rx.on('error', () => {});
+    const tx = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+    const done = (err) => {
+      clearTimeout(timer);
+      try { tx.close(); } catch {}
+      try { rx.close(); } catch {}
+      if (err) reject(err); else resolve([...found.values()]);
+    };
+    const timer = setTimeout(() => done(null), timeoutMs);
+    rx.on('error', done);
+    tx.on('error', done);
     rx.on('message', (msg) => {
       const d = pdpParseIdentify(msg);
-      if (d) found.set(d.mac, d);
+      if (d && msg.readUInt16BE(6) === txid) found.set(d.mac, d);
     });
     rx.bind(PDP_PORT, () => {
       try { rx.setBroadcast(true); } catch {}
-      const tx = dgram.createSocket({ type: 'udp4', reuseAddr: true });
-      tx.on('error', () => {});
       const fire = () => {
         try { tx.setBroadcast(true); } catch {}
-        tx.send(pdpBuildIdentify(0xF00D), PDP_PORT, '255.255.255.255');
+        tx.send(pdpBuildIdentify(txid), PDP_PORT, '255.255.255.255');
       };
       if (nicIp) tx.bind(0, nicIp, fire); else tx.bind(0, fire);
-      setTimeout(() => {
-        try { tx.close(); } catch {}
-        try { rx.close(); } catch {}
-        resolve([...found.values()]);
-      }, timeoutMs);
     });
   });
 }
@@ -427,24 +494,23 @@ function pdpDiscover(nicIp, timeoutMs = 1500) {
 async function discoverBootloader(nicIp, mac, timeoutS = 15) {
   const deadline = Date.now() + timeoutS * 1000;
   while (Date.now() < deadline) {
-    const bl = (await pdpDiscover(nicIp, 1500)).filter((d) => d.inBoot && (!mac || d.mac === mac));
-    if (mac) { const m = bl.find((d) => d.mac === mac); if (m) return m; }
-    else if (bl.length === 1) return bl[0];
-    else if (bl.length > 1) {
-      console.log(`  Multiple bootloaders found (${bl.map((d) => d.mac).join(', ')}); pass --mac to disambiguate`);
-    }
+    const dev = selectBootloader(await pdpDiscover(nicIp, 1500), mac);
+    if (dev) return dev;
   }
   return null;
 }
 
-/** True if a bootloader answers Modbus at ip:port (magic check). */
-async function isBootloaderReachable(ip, port) {
+/** Probe a bootloader at ip:port and verify its MAC on that connection. */
+async function isBootloaderReachable(ip, port, mac) {
   const c = new ModbusTcpClient(ip, port, UNIT_ID, 1000);
   try {
     await c.connect();
-    const regs = await readInputRegs(c);
-    return u32FromRegs(regs, IR_MAGIC_HI) === BOOTLOADER_MAGIC;
-  } catch { return false; } finally { c.close(); }
+    await verifyBootloaderIdentity(c, mac);
+    return true;
+  } catch (e) {
+    if (e instanceof TargetError || e instanceof ModbusException) throw e;
+    return false;
+  } finally { c.close(); }
 }
 
 /** Broadcast a discovery SET_NET (static) to `mac`, re-sent for reliability. */
@@ -473,32 +539,29 @@ function pdpSetNetStatic(nicIp, mac, ip, mask, gw) {
 async function pdpMacForIp(nicIp, ip, timeoutS = 4) {
   const deadline = Date.now() + timeoutS * 1000;
   while (Date.now() < deadline) {
-    const d = (await pdpDiscover(nicIp, 1500)).find((x) => x.ip === ip);
-    if (d) return d.mac;
+    const matches = (await pdpDiscover(nicIp, 1500)).filter((x) => x.ip === ip);
+    if (matches.length > 1) throw new TargetError(`Multiple devices claim ${ip}`);
+    if (matches.length === 1) return matches[0].mac;
   }
   return null;
 }
 
 /**
- * Ensure args.ip / args.bootIp point at a reachable bootloader. If the
- * configured IP does not answer as a bootloader, discover the link-local one
- * by MAC (args.mac) and adopt its address.
+ * Resolve the selected MAC through PDP, verify it over TCP, and update
+ * args.ip / args.bootIp. An already answering IP never bypasses MAC checks.
  */
 async function ensureBootloaderIp(args, timeoutS = 15) {
   const desiredIp = args.ip;   // configured / --boot-ip target (default 192.168.1.2)
 
-  // 1) A bootloader already answering at the configured IP?
-  if (await isBootloaderReachable(args.ip, args.port)) return true;
-
-  // 2) Discover the (link-local) bootloader by MAC.
-  console.log(`  ${args.ip} did not answer as a bootloader; discovering via PDP (UDP/${PDP_PORT})...`);
+  // Resolve the selected MAC even when the configured IP already answers.
+  console.log(`  Discovering target via PDP (UDP/${PDP_PORT})...`);
   const dev = await discoverBootloader(args.nic, args.mac, timeoutS);
   if (!dev) return false;
   console.log(`  Found bootloader ${dev.mac} at ${dev.ip}`);
   args.mac = dev.mac;
 
   // 3) Directly reachable from this host (same subnet)?
-  if (await isBootloaderReachable(dev.ip, args.port)) {
+  if (await isBootloaderReachable(dev.ip, args.port, args.mac)) {
     args.ip = dev.ip; args.bootIp = dev.ip;
     return true;
   }
@@ -507,11 +570,18 @@ async function ensureBootloaderIp(args, timeoutS = 15) {
   //    reassign it live to the desired IP via discovery SET_NET, then use it.
   const o = desiredIp.split('.');
   const gw = `${o[0]}.${o[1]}.${o[2]}.1`;
+  const peers = await pdpDiscover(args.nic);
+  if (peers.some((d) => d.ip === desiredIp && d.mac !== args.mac))
+    throw new TargetError(`Requested address ${desiredIp} is already in use`);
+  if (await isBootloaderReachable(desiredIp, args.port, args.mac)) {
+    args.ip = desiredIp; args.bootIp = desiredIp;
+    return true;
+  }
   console.log(`  ${dev.ip} not directly reachable; assigning ${desiredIp} via SET_NET...`);
   await pdpSetNetStatic(args.nic, dev.mac, desiredIp, '255.255.255.0', gw);
   const d2 = Date.now() + 8000;
   while (Date.now() < d2) {
-    if (await isBootloaderReachable(desiredIp, args.port)) {
+    if (await isBootloaderReachable(desiredIp, args.port, args.mac)) {
       args.ip = desiredIp; args.bootIp = desiredIp;
       return true;
     }
@@ -535,7 +605,7 @@ async function waitForBootloaderReady(args, timeoutS = 20) {
     const c = new ModbusTcpClient(args.bootIp, args.port, UNIT_ID, 1200);
     try {
       await c.connect();
-      const regs = await readInputRegs(c);
+      const regs = await verifyBootloaderIdentity(c, args.mac);
       const magic = u32FromRegs(regs, IR_MAGIC_HI);
       const state = regs[IR_BOOT_STATE];
 
@@ -569,13 +639,18 @@ async function waitForBootloaderReady(args, timeoutS = 20) {
 
 /** @param {{appIp:string,port:number}} args @param {number} registerAddr @param {number} value @param {string} label */
 async function sendAppAction(args, registerAddr, value, label) {
+  const discovered = await pdpMacForIp(args.nic, args.appIp);
+  if (!discovered || (args.mac && normalizeMac(args.mac) !== discovered))
+    throw new TargetError('Application MAC/IP could not be verified through PDP');
+  args.mac = discovered;
   const c = new ModbusTcpClient(args.appIp, args.port, UNIT_ID);
   await c.connect();
   try {
     console.log(`Sending ${label} to application at ${args.appIp}:${args.port}...`);
     try {
       await c.writeSingleRegister(registerAddr, value);
-    } catch {
+    } catch (e) {
+      if (e instanceof ModbusException) throw e;
       // Application may reset before replying; that is acceptable here.
     }
   } finally {
@@ -600,16 +675,21 @@ async function cmdStatus(args) {
     }
 
     const ver = u32FromRegs(regs, IR_VERSION_HI);
-    console.log(`BL version:     ${ver >>> 16}.${(ver >>> 8) & 0xff}.${ver & 0xff}`);
+    console.log(`BL version:     ${(ver >>> 8) & 0xff}.${ver & 0xff}`);
 
     const state = regs[IR_BOOT_STATE];
     console.log(`Boot state:     ${BOOT_STATE_NAMES[state] ?? state} (${state})`);
     console.log(`App valid:      ${regs[IR_APP_VALID]}`);
     const appVer = u32FromRegs(regs, IR_APP_VER_HI);
-    console.log(`App version:    ${appVer >>> 16}.${(appVer >>> 8) & 0xff}.${appVer & 0xff}`);
+    console.log(`App version:    ${(appVer >>> 8) & 0xff}.${appVer & 0xff}`);
     const prodId = u32FromRegs(regs, IR_PRODUCT_ID_HI);
     console.log(`Product ID:     0x${prodId.toString(16).toUpperCase().padStart(8, '0')}`);
-    console.log(`HW revision:    ${regs[IR_HW_REV]}`);
+    const hw = u32FromRegs(regs, IR_HW_REV);
+    console.log(`HW revision:    ${(hw >>> 16) & 0xff}.${(hw >>> 8) & 0xff}.${hw & 0xff}`);
+    if (ver >= 0x0108) {
+      const macRegs = await c.readInputRegisters(IR_MAC, 3);
+      console.log(`MAC:            ${macRegs.flatMap((r) => [r >>> 8, r & 255]).map((b) => b.toString(16).padStart(2, '0')).join(':')}`);
+    }
     const err = regs[IR_LAST_ERROR];
     console.log(`Last error:     ${ERROR_NAMES[err] ?? err} (${err})`);
     const blockCount = u32FromRegs(regs, IR_BLOCK_COUNT_HI);
@@ -631,9 +711,11 @@ async function cmdStatus(args) {
 
 /** @param {{ip:string,port:number}} args */
 async function cmdAbort(args) {
+  if (!(await ensureBootloaderIp(args))) throw new TargetError('Selected bootloader not found');
   const c = new ModbusTcpClient(args.ip, args.port, UNIT_ID);
   await c.connect();
   try {
+    await verifyBootloaderIdentity(c, args.mac);
     console.log('Sending CMD_ABORT_UPDATE...');
     await c.writeSingleRegister(HR_CMD, CMD_ABORT_UPDATE);
     if (await waitForStatus(c, CMD_STATUS_OK, 5)) console.log('Aborted OK');
@@ -644,15 +726,18 @@ async function cmdAbort(args) {
 
 /** @param {{ip:string,port:number}} args */
 async function cmdReboot(args) {
+  if (!(await ensureBootloaderIp(args))) throw new TargetError('Selected bootloader not found');
   const c = new ModbusTcpClient(args.ip, args.port, UNIT_ID);
   await c.connect();
   try {
+    await verifyBootloaderIdentity(c, args.mac);
     console.log('Sending CMD_REBOOT...');
     // The device resets immediately and will not send a Modbus response, so a
     // timeout / connection drop here is expected and not an error.
     try {
       await c.writeSingleRegister(HR_CMD, CMD_REBOOT);
-    } catch {
+    } catch (e) {
+      if (e instanceof ModbusException) throw e;
       // expected: device rebooted before replying
     }
     console.log('Device is rebooting.');
@@ -669,13 +754,7 @@ async function cmdAppReboot(args) {
 
 /** @param {{appIp:string,port:number,bootIp:string}} args */
 async function cmdAppBootloader(args) {
-  // Learn the target MAC first (via discovery of the running app) so the
-  // link-local bootloader can be located after the reset. Best-effort: if it
-  // fails, discovery falls back to "the sole bootloader found".
-  if (!args.mac) {
-    args.mac = await pdpMacForIp(args.nic, args.appIp, 4);
-    if (args.mac) console.log(`Target MAC:     ${args.mac}`);
-  }
+  // sendAppAction verifies and retains the application MAC before reset.
   await sendAppAction(args, APP_HR_TRIGGER, APP_CMD_BOOTLOADER, 'APP bootloader command');
   console.log('Application is switching to bootloader mode...');
 
@@ -706,15 +785,21 @@ async function cmdUpdate(args) {
   }
 
   const imageSize = fwData.length;
-  if (imageSize === 0 || imageSize > STAGING_FLASH_SIZE) {
-    console.log(`ERROR: image size ${imageSize} bytes is out of range (1..${STAGING_FLASH_SIZE})`);
+  if (imageSize < 0x200 + 28 || imageSize > STAGING_FLASH_SIZE) {
+    console.log(`ERROR: image size ${imageSize} bytes is out of range (540..${STAGING_FLASH_SIZE})`);
     process.exit(1);
   }
 
   const imageCrc = crc32(fwData);
   const blockSize = FW_MAX_BLOCK_SIZE;
   const blockCount = Math.ceil(imageSize / blockSize);
-  const fwVersion = args.version;
+  if (fwData.readUInt32LE(0x200) !== 0x504c434a || fwData.readUInt32LE(0x210) !== 0)
+    throw new TargetError('Invalid firmware header');
+  const fwVersion = fwData.readUInt32LE(0x20c);
+  const imageProduct = fwData.readUInt32LE(0x204);
+  const imageHw = fwData.readUInt16LE(0x208);
+  if (args.version != null && args.version !== fwVersion)
+    throw new TargetError('--version must match the version embedded in the image');
 
   console.log(`Firmware:    ${args.firmware}`);
   console.log(`Size:        ${imageSize} bytes`);
@@ -724,11 +809,12 @@ async function cmdUpdate(args) {
   console.log(`FW version:  0x${(fwVersion >>> 0).toString(16).toUpperCase().padStart(8, '0')}`);
   console.log('');
 
-  const c = new ModbusTcpClient(args.ip, args.port, UNIT_ID);
+  if (!(await ensureBootloaderIp(args))) throw new TargetError('Selected bootloader not found');
+  const c = new ModbusTcpClient(args.ip, args.port, UNIT_ID, 15000);
   await c.connect();
   try {
     // ---- Verify bootloader is reachable ----------------------------------
-    let regs = await readInputRegs(c);
+    const regs = await verifyBootloaderIdentity(c, args.mac);
     const magic = u32FromRegs(regs, IR_MAGIC_HI);
     if (magic !== 0xb00710ad) {
       console.log(`ERROR: unexpected magic 0x${magic.toString(16).padStart(8, '0')} - is bootloader running?`);
@@ -740,13 +826,12 @@ async function cmdUpdate(args) {
       process.exit(1);
     }
 
-    // Use the bootloader's own product_id / hw_revision for the BEGIN_UPDATE
-    // pre-check (variant-agnostic — no hard-coded per-variant identity). The
-    // image's real identity is still validated against the bootloader from its
-    // embedded fw_header at FINALIZE, so a wrong-variant image is still caught.
+    // Check the image against the identity read on this very connection.
     const targetProdId = u32FromRegs(regs, IR_PRODUCT_ID_HI);
     const hwRev32 = u32FromRegs(regs, IR_HW_REV);
     const hwRevBegin = ((((hwRev32 >>> 16) & 0xff) << 8) | ((hwRev32 >>> 8) & 0xff)) >>> 0;
+    if (imageProduct !== targetProdId || (imageHw >>> 8) !== (hwRevBegin >>> 8))
+      throw new TargetError('Image product/HW major does not match the selected device');
     console.log(`Target:      product_id 0x${targetProdId.toString(16).toUpperCase().padStart(8, '0')}, hw ${(hwRev32 >>> 16) & 0xff}.${(hwRev32 >>> 8) & 0xff}`);
     console.log('');
 
@@ -761,9 +846,9 @@ async function cmdUpdate(args) {
       imageCrc & 0xffff,
       (fwVersion >>> 16) & 0xffff,
       fwVersion & 0xffff,
-      (targetProdId >>> 16) & 0xffff,
-      targetProdId & 0xffff,
-      hwRevBegin,
+      (imageProduct >>> 16) & 0xffff,
+      imageProduct & 0xffff,
+      imageHw,
       blockSize,
       (blockCount >>> 16) & 0xffff,
       blockCount & 0xffff,
@@ -831,7 +916,7 @@ function parseArgs(argv) {
     bootIp: BOOTLOADER_TARGET_IP,
     appIp: APP_TARGET_IP,
     port: TARGET_PORT,
-    version: 0x00010000,
+    version: null,
     command: null,
     firmware: null,
     nic: null,   // local NIC IP to broadcast discovery from (multi-homed hosts)
@@ -846,7 +931,7 @@ function parseArgs(argv) {
     }
     else if (a === '--app-ip') args.appIp = argv[++i];
     else if (a === '--nic') args.nic = argv[++i];
-    else if (a === '--mac') args.mac = (argv[++i] || '').toLowerCase();
+    else if (a === '--mac') args.mac = normalizeMac(argv[++i]);
     else if (a === '--port') args.port = parseInt(argv[++i], 10);
     else if (a === '--version') args.version = parseInt(argv[++i], 0) >>> 0;
     else if (a === '-h' || a === '--help') args.command = 'help';
@@ -874,11 +959,18 @@ Options:
   --boot-ip <addr>   Bootloader IP       (default ${BOOTLOADER_TARGET_IP})
   --app-ip <addr>    Application IP      (default ${APP_TARGET_IP})
   --port <n>         Modbus TCP port      (default ${TARGET_PORT})
-  --version <hex>    FW version 0xMMmmpp  (default 0x00010000)`);
+  --mac <address>    Selected device MAC (required when several bootloaders reply)
+  --nic <addr>       Local IPv4 adapter address for PDP discovery
+  --version <hex>    Optional check against the embedded version (0xMMmm)
+
+Updates, ABORT and REBOOT require PDP discovery and BL 1.8+ MAC registers.
+Read-only status remains available on older bootloaders.`);
 }
 
 async function main() {
-  const args = parseArgs(process.argv.slice(2));
+  let args;
+  try { args = parseArgs(process.argv.slice(2)); }
+  catch (e) { console.error(e.message); process.exitCode = 1; return; }
 
   if (args.command === 'help' || !args.command) {
     usage();
@@ -910,11 +1002,6 @@ async function main() {
           console.log('ERROR: `update` requires a firmware .bin path');
           process.exit(1);
         }
-        // Bootloader defaults to link-local: resolve/discover its IP first.
-        if (!(await ensureBootloaderIp(args, 15))) {
-          console.log('ERROR: no bootloader found (configured IP silent and PDP discovery failed)');
-          process.exit(1);
-        }
         await cmdUpdate(args);
         break;
       default:
@@ -928,4 +1015,5 @@ async function main() {
   }
 }
 
-await main();
+export { ModbusTcpClient, verifyBootloaderIdentity, normalizeMac, selectBootloader, pdpParseIdentify };
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await main();

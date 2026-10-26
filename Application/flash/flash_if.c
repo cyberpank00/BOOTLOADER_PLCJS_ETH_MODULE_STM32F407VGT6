@@ -4,11 +4,17 @@
  */
 
 #include "flash_if.h"
+#include "flash_map.h"
 #include "stm32f4xx_hal.h"
 #include <string.h>
 
 bool flash_if_erase_sectors(uint32_t first_sector, uint32_t count)
 {
+    uint32_t last = first_sector == META_FLASH_SECTOR ? META_FLASH_SECTOR :
+                    first_sector <= APP_LAST_SECTOR ? APP_LAST_SECTOR : STAGING_LAST_SECTOR;
+    if (first_sector < META_FLASH_SECTOR || first_sector > STAGING_LAST_SECTOR ||
+        count == 0u || count > last - first_sector + 1u)
+        return false;
     if (HAL_FLASH_Unlock() != HAL_OK) {
         return false;
     }
@@ -29,6 +35,12 @@ bool flash_if_erase_sectors(uint32_t first_sector, uint32_t count)
 
 bool flash_if_write(uint32_t dest_addr, const uint8_t *src, uint32_t len)
 {
+    uint32_t end = dest_addr < APP_FLASH_BASE ? META_FLASH_BASE + META_FLASH_SIZE :
+                   dest_addr < STAGING_FLASH_BASE ? APP_FLASH_END : STAGING_FLASH_END;
+    if (src == NULL || len == 0u || (dest_addr & 3u) != 0u ||
+        dest_addr < META_FLASH_BASE || dest_addr >= STAGING_FLASH_END ||
+        len > end - dest_addr || ((len + 3u) & ~3u) > end - dest_addr)
+        return false;
     if (HAL_FLASH_Unlock() != HAL_OK) {
         return false;
     }
@@ -37,10 +49,11 @@ bool flash_if_write(uint32_t dest_addr, const uint8_t *src, uint32_t len)
     uint32_t full_words = len / 4u;
     uint32_t tail       = len % 4u;
     uint32_t addr       = dest_addr;
-    const uint32_t *w   = (const uint32_t *)(const void *)src;
 
     for (uint32_t i = 0; i < full_words; i++) {
-        if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, addr, w[i]) != HAL_OK) {
+        uint32_t word;
+        memcpy(&word, src + 4u * i, sizeof(word));
+        if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, addr, word) != HAL_OK) {
             HAL_FLASH_Lock();
             return false;
         }

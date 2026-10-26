@@ -46,69 +46,37 @@ static void sm_start(void)
 static void sm_check_entry(void)
 {
     if (boot_entry_should_stay(&s_meta)) {
+        MX_LWIP_Init();
+        modbus_boot_server_init(&s_meta, 502u);
+        /* Discovery responder so a bootloader-mode device is found and
+         * addressed by MAC (IDENTIFY reports in_bootloader = 1). */
+        discovery_init();
         /* If an installation was interrupted, resume it. */
         if (s_meta.install_in_progress) {
-            s_meta.boot_state = (uint32_t)BOOT_INSTALL_FW;
-            s_state = BOOT_INSTALL_FW;
-            led_indication_set(LED_PATTERN_INSTALLING);
-        } else if (s_meta.install_requested && s_meta.staging_valid) {
-            s_meta.boot_state = (uint32_t)BOOT_INSTALL_FW;
-            s_state = BOOT_INSTALL_FW;
-            led_indication_set(LED_PATTERN_INSTALLING);
-        } else {
-            s_meta.boot_state = (uint32_t)BOOT_WAIT_COMMAND;
-            s_state = BOOT_WAIT_COMMAND;
+            if (fw_installer_start(&s_meta)) {
+                s_state = BOOT_INSTALL_FW;
+                led_indication_set(LED_PATTERN_INSTALLING);
+            } else {
+                fw_proto_install_error();
+                s_state = BOOT_ERROR;
+                led_indication_set(LED_PATTERN_ERROR);
+            }
+        } else if (s_meta.staging_valid && s_meta.boot_state != BOOT_ERROR) {
+            s_meta.install_requested = 0u;
+            s_meta.boot_state = BOOT_VERIFY_STAGING;
+            s_state = BOOT_VERIFY_STAGING;
             led_indication_set(LED_PATTERN_IDLE);
-
-            MX_LWIP_Init();
-            modbus_boot_server_init(&s_meta, 502u);
-            /* Discovery responder so a bootloader-mode device is found and
-             * addressed by MAC (IDENTIFY reports in_bootloader = 1). */
-            discovery_init();
+        } else {
+            s_meta.boot_state = s_meta.boot_state == BOOT_ERROR ? BOOT_ERROR : BOOT_WAIT_COMMAND;
+            s_state = (boot_state_t)s_meta.boot_state;
+            led_indication_set(s_state == BOOT_ERROR ? LED_PATTERN_ERROR : LED_PATTERN_IDLE);
         }
     } else {
         s_state = BOOT_READY_TO_BOOT;
     }
 }
 
-static void sm_wait_command(void)
-{
-    ethernet_poll();
-    modbus_boot_server_poll();
-    fw_proto_poll(&s_meta);
-
-    if (fw_proto_reboot_requested()) {
-        HAL_NVIC_SystemReset();
-    }
-
-    /* Transition to RECEIVE_FW is done inside fw_update_proto via BEGIN_UPDATE. */
-    if (s_meta.boot_state == (uint32_t)BOOT_RECEIVE_FW) {
-        s_state = BOOT_RECEIVE_FW;
-        led_indication_set(LED_PATTERN_RECEIVING);
-    }
-}
-
-static void sm_receive_fw(void)
-{
-    ethernet_poll();
-    modbus_boot_server_poll();
-    fw_proto_poll(&s_meta);
-
-    if (fw_proto_reboot_requested()) {
-        HAL_NVIC_SystemReset();
-    }
-
-    if (s_meta.boot_state == (uint32_t)BOOT_VERIFY_STAGING) {
-        s_state = BOOT_VERIFY_STAGING;
-    }
-
-    if (s_meta.boot_state == (uint32_t)BOOT_WAIT_COMMAND) {
-        s_state = BOOT_WAIT_COMMAND;
-        led_indication_set(LED_PATTERN_IDLE);
-    }
-}
-
-static void sm_verify_staging(void)
+static void sm_commands(void)
 {
     ethernet_poll();
     modbus_boot_server_poll();
@@ -119,11 +87,20 @@ static void sm_verify_staging(void)
     }
 
     if (fw_proto_install_requested()) {
-        s_state = BOOT_INSTALL_FW;
-        s_meta.boot_state = (uint32_t)BOOT_INSTALL_FW;
-        led_indication_set(LED_PATTERN_INSTALLING);
-        fw_installer_start(&s_meta);
+        if (fw_installer_start(&s_meta)) {
+            s_state = BOOT_INSTALL_FW;
+            led_indication_set(LED_PATTERN_INSTALLING);
+        } else {
+            fw_proto_install_error();
+            s_state = BOOT_ERROR;
+            led_indication_set(LED_PATTERN_ERROR);
+        }
+        return;
     }
+    /* Protocol transitions and the executing state must stay in sync. */
+    s_state = (boot_state_t)s_meta.boot_state;
+    led_indication_set(s_state == BOOT_ERROR ? LED_PATTERN_ERROR :
+                       s_state == BOOT_RECEIVE_FW ? LED_PATTERN_RECEIVING : LED_PATTERN_IDLE);
 }
 
 static void sm_install_fw(void)
@@ -138,7 +115,7 @@ static void sm_install_fw(void)
 
     switch (ist) {
     case INST_DONE:
-        fw_proto_install_done();
+        s_meta.boot_state = BOOT_VERIFY_APP;
         s_state = BOOT_VERIFY_APP;
         break;
     case INST_ERROR:
@@ -161,7 +138,8 @@ static void sm_verify_app(void)
         s_meta.app_valid   = 0u;
         s_meta.last_error  = BOOT_ERR_PRODUCT_MISMATCH;
         s_meta.boot_state  = (uint32_t)BOOT_ERROR;
-        metadata_save(&s_meta);
+        if (!metadata_save(&s_meta)) s_meta.last_error = BOOT_ERR_FLASH_WRITE;
+        fw_proto_install_error();
         s_state = BOOT_ERROR;
         led_indication_set(LED_PATTERN_ERROR);
         return;
@@ -169,6 +147,8 @@ static void sm_verify_app(void)
     if (app_validate_full(APP_FLASH_BASE,
                           s_meta.app_image_size,
                           s_meta.app_image_crc32)) {
+        s_meta.boot_state = BOOT_READY_TO_BOOT;
+        fw_proto_install_done();
         /* Install succeeded. Keep servicing the network briefly so the updater
          * can read the final CMD_STATUS_OK before we tear down LwIP and jump to
          * the application (otherwise the client's poll sees the connection reset
@@ -185,7 +165,8 @@ static void sm_verify_app(void)
         s_meta.app_valid   = 0u;
         s_meta.last_error  = BOOT_ERR_APP_VALIDATE;
         s_meta.boot_state  = (uint32_t)BOOT_ERROR;
-        metadata_save(&s_meta);
+        if (!metadata_save(&s_meta)) s_meta.last_error = BOOT_ERR_FLASH_WRITE;
+        fw_proto_install_error();
         s_state = BOOT_ERROR;
         led_indication_set(LED_PATTERN_ERROR);
     }
@@ -195,23 +176,6 @@ static void sm_ready_to_boot(void)
 {
     led_indication_deinit();     /* TIM7 PWM off before handing over the MCU */
     boot_jump_to_app(APP_FLASH_BASE);
-}
-
-static void sm_error(void)
-{
-    ethernet_poll();
-    modbus_boot_server_poll();
-    fw_proto_poll(&s_meta);
-
-    if (fw_proto_reboot_requested()) {
-        HAL_NVIC_SystemReset();
-    }
-
-    /* Allow restarting an update from the error state. */
-    if (s_meta.boot_state == (uint32_t)BOOT_RECEIVE_FW) {
-        s_state = BOOT_RECEIVE_FW;
-        led_indication_set(LED_PATTERN_RECEIVING);
-    }
 }
 
 /* ---- Public entry point ------------------------------------------------- */
@@ -231,14 +195,14 @@ void boot_run(void)
         switch (s_state) {
         case BOOT_START:          sm_start();          break;
         case BOOT_CHECK_ENTRY:    sm_check_entry();    break;
-        case BOOT_WAIT_COMMAND:   sm_wait_command();   break;
+        case BOOT_WAIT_COMMAND:   sm_commands();       break;
         case BOOT_PREPARE_UPDATE: /* handled in proto */break;
-        case BOOT_RECEIVE_FW:     sm_receive_fw();     break;
-        case BOOT_VERIFY_STAGING: sm_verify_staging();  break;
+        case BOOT_RECEIVE_FW:     sm_commands();       break;
+        case BOOT_VERIFY_STAGING: sm_commands();       break;
         case BOOT_INSTALL_FW:     sm_install_fw();      break;
         case BOOT_VERIFY_APP:     sm_verify_app();      break;
         case BOOT_READY_TO_BOOT:  sm_ready_to_boot();   break;
-        case BOOT_ERROR:          sm_error();            break;
+        case BOOT_ERROR:          sm_commands();       break;
         }
     }
 }

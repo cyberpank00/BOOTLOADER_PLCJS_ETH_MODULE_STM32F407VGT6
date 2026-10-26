@@ -33,6 +33,7 @@ extern "C" {
 
 /* ---- TCP settings ------------------------------------------------------- */
 #define LWIP_TCP                1
+#define LWIP_TCP_KEEPALIVE      1
 #define TCP_MSS                 1460
 #define TCP_SND_BUF             (4 * TCP_MSS)
 #define TCP_WND                 (4 * TCP_MSS)

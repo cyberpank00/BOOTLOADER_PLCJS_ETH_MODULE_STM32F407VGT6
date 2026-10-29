@@ -513,8 +513,11 @@ async function isBootloaderReachable(ip, port, mac) {
   } finally { c.close(); }
 }
 
-/** Broadcast a discovery SET_NET (static) to `mac`, re-sent for reliability. */
-function pdpSetNetStatic(nicIp, mac, ip, mask, gw) {
+/** Broadcast a discovery SET_NET (static) to `mac`, re-sent for reliability.
+ *  Resolves with the device's status byte (0 = applied, 1 = refused, e.g. the
+ *  address answered the firmware's ARP probe) or null if no reply arrived. The
+ *  firmware answers after its ~1 s address probe, so wait up to `waitMs`. */
+function pdpSetNetStatic(nicIp, mac, ip, mask, gw, waitMs = 2500) {
   return new Promise((resolve) => {
     const macB = Buffer.from(mac.split(':').map((h) => parseInt(h, 16)));
     const oct = (s) => s.split('.').map((n) => parseInt(n, 10) & 0xff);
@@ -524,14 +527,31 @@ function pdpSetNetStatic(nicIp, mac, ip, mask, gw) {
     f[4] = PDP_VER; f[5] = 0x02; f.writeUInt16BE(0x5E70, 6);
     macB.copy(f, 8); f.writeUInt16BE(payload.length, 14); payload.copy(f, 16);
     const tx = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+    const rx = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+    let status = null;
+    let timer = null;
+    const done = () => {
+      clearTimeout(timer);
+      try { tx.close(); } catch {}
+      try { rx.close(); } catch {}
+      resolve(status);
+    };
     tx.on('error', () => {});
-    const done = () => { try { tx.close(); } catch {} resolve(); };
+    rx.on('error', () => {});
+    rx.on('message', (m) => {
+      if (m.length >= 17 && m.toString('ascii', 0, 4) === 'PLCD' && m[5] === (0x02 | PDP_RESP) &&
+          m.readUInt16BE(6) === 0x5E70 && m.subarray(8, 14).equals(macB)) {
+        status = m[16];
+        done();
+      }
+    });
     const fire = () => {
       try { tx.setBroadcast(true); } catch {}
       tx.send(f, PDP_PORT, '255.255.255.255');
-      setTimeout(() => { tx.send(f, PDP_PORT, '255.255.255.255'); setTimeout(done, 300); }, 300);
+      setTimeout(() => tx.send(f, PDP_PORT, '255.255.255.255'), 300);
+      timer = setTimeout(done, waitMs);
     };
-    if (nicIp) tx.bind(0, nicIp, fire); else tx.bind(0, fire);
+    rx.bind(PDP_PORT, () => { if (nicIp) tx.bind(0, nicIp, fire); else tx.bind(0, fire); });
   });
 }
 
@@ -578,7 +598,9 @@ async function ensureBootloaderIp(args, timeoutS = 15) {
     return true;
   }
   console.log(`  ${dev.ip} not directly reachable; assigning ${desiredIp} via SET_NET...`);
-  await pdpSetNetStatic(args.nic, dev.mac, desiredIp, '255.255.255.0', gw);
+  const setStatus = await pdpSetNetStatic(args.nic, dev.mac, desiredIp, '255.255.255.0', gw);
+  if (setStatus === 1)
+    throw new TargetError(`SET_NET refused: ${desiredIp} is already in use on the network (address probe) or the bootloader is busy`);
   const d2 = Date.now() + 8000;
   while (Date.now() < d2) {
     if (await isBootloaderReachable(desiredIp, args.port, args.mac)) {

@@ -63,6 +63,7 @@ not hardware. "Hardware verified" still requires a real OTA/power-cut campaign.
   BEGIN → blocks → FINALIZE → INSTALL. The Qt tool's `FwWorker` is a port of this.
 - `device_id.mjs` — computes a board's MAC / link-local label address from its
   UID (`--stlink --variant 12do`).
+- `hil/` — hardware-in-the-loop helpers (PDP scan / SET_NET, abandoned-session timeout, fault injection). See `tools/hil/README.md`.
 
 ## Module map (`Application/`)
 

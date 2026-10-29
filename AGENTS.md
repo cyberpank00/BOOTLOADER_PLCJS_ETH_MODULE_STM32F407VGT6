@@ -44,6 +44,14 @@ cmake --build build
 seeding of an already flashed application. It is not the OTA transport metadata
 generator. Image size and CRC travel as OTA parameters, outside the image header.
 
+`scripts/service_flash.ps1` is the supported "cheat" path for RMA/debug: it
+programs an application over ST-Link (sectors 6-7) and then the matching
+metadata (sector 5). It is needed because since 1.8 `boot_entry_should_stay()`
+CRC-checks the installed image against `app_image_size/app_image_crc32` from the
+metadata before every boot — an app flashed over SWD (IDE/debugger, ST-Link
+`-w`) without matching metadata keeps the board in the bootloader. Never
+mass-erase: sector 11 holds the write-once calibration of 4RTD/8AIC/8AOC.
+
 Host tests live in `tests/`: configure with a native C compiler using
 `cmake -S tests -B build/host-tests -G Ninja -DCMAKE_C_COMPILER=gcc`, build, then
 `ctest --test-dir build/host-tests --output-on-failure`. Node tests:
@@ -209,6 +217,21 @@ BL 1.8 invariants:
   affect the next boot decision. Check `metadata.c` before changing state logic.
 - `variants.csv` is the single list of shipped variants; adding a board means
   adding a row there **and** creating the matching firmware repo identity.
+
+## Known gaps (open work)
+
+- **No IP-conflict check on PDP `SET_NET`.** `discovery.c` applies the address
+  with `netif_set_addr()` without checking whether another host already owns it;
+  the link-local default has no ACD either (`LWIP_AUTOIP 0`). The assignment is
+  live only (not persisted in the bootloader), so a duplicate disappears on the
+  next reset but until then two devices fight over the address. The same gap
+  exists in every application's `discovery/`. Planned fix, both layers:
+  firmware probes the address (ARP probe / lwIP ACD) before applying it and
+  replies `PDP_STATUS_ERR` if it is taken (covers non-PDP hosts such as the PC
+  or a PLC); the tools (`fw_update.mjs`, ModbusTool `Pdp.cpp`) run a broadcast
+  IDENTIFY first and refuse an address already reported by another MAC. Needs
+  the same change in the bootloader, all five application firmwares and
+  ModbusTool.
 
 ## Multi-repo workspace
 

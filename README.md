@@ -464,6 +464,27 @@ seeding of an already flashed application; it does not create OTA transport
 parameters or modify the image. Header HW is 16-bit; board HW is 24-bit.
 Compare `(header.hw_revision >> 8)` with `(HW_REVISION_DEFAULT >> 16)`.
 
+### Service flashing over ST-Link (RMA, debugging)
+
+OTA is the only supported production path. Since 1.8 the bootloader checks the
+installed image's CRC against the size and CRC stored in the sector-5 metadata
+before every boot, so an application written over SWD without matching metadata
+is refused and the board stays in the bootloader. For service cases:
+
+```powershell
+./scripts/service_flash.ps1 -AppBin <app.bin>        # -DryRun only prints the command
+```
+
+The script checks the image vectors and `fw_header_t`, takes product/hw/version
+from the header, builds the metadata, then programs the application (sectors
+6-7) and, last, the metadata (sector 5), and resets the board. The bootloader
+(0-4), settings (10) and the 4RTD/8AIC/8AOC calibration (11) are untouched and no
+mass erase is performed. The order is power-cut safe: if the write is
+interrupted between the application and the metadata, the old metadata no longer
+matches by CRC, the board stays in the bootloader and recovers over OTA. An
+image of another variant (different product ID) is not started by the
+bootloader. Verified on a 4RTD HW2.1 with bootloader 1.8.
+
 **Validation chain** (three independent checks):
 
 | Point | Where | What is checked |

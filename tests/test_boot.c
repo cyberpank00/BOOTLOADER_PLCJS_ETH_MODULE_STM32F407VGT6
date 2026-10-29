@@ -54,6 +54,9 @@ HAL_StatusTypeDef HAL_FLASH_Program(uint32_t type, uint32_t address, uint64_t da
 }
 
 uint32_t HAL_GetTick(void) { static uint32_t tick; return tick++; }
+static unsigned wdg_starts, wdg_refreshes;
+void boot_wdg_start(void) { wdg_starts++; }
+void boot_wdg_refresh(void) { wdg_refreshes++; }
 void HAL_NVIC_SystemReset(void) { abort(); }
 void boot_jump_to_app(uint32_t base) { (void)base; abort(); }
 void MX_LWIP_Init(void) { networks++; }
@@ -364,8 +367,12 @@ static void test_session_timeout(void)
     assert(!fw_proto_session_timeout(5000));
     assert(fw_proto_session_timeout(5000 + T));
     assert(s_meta.boot_state == BOOT_WAIT_COMMAND && !s_meta.received_block_count);
+    const unsigned starts = wdg_starts;
     reset_boot();
     assert(s_state == BOOT_READY_TO_BOOT && s_meta.app_valid);
+    assert(wdg_starts == starts);   /* the plain handoff never arms the watchdog */
+    fixture();
+    assert(wdg_starts == starts + 1u && s_state == BOOT_WAIT_COMMAND);   /* staying arms it once */
 }
 
 int main(void)

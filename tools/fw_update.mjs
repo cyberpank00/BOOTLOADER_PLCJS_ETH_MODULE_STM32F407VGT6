@@ -530,8 +530,10 @@ function pdpSetNetStatic(nicIp, mac, ip, mask, gw, waitMs = 2500) {
     const rx = dgram.createSocket({ type: 'udp4', reuseAddr: true });
     let status = null;
     let timer = null;
+    let resend = null;
     const done = () => {
       clearTimeout(timer);
+      clearTimeout(resend);
       try { tx.close(); } catch {}
       try { rx.close(); } catch {}
       resolve(status);
@@ -548,7 +550,7 @@ function pdpSetNetStatic(nicIp, mac, ip, mask, gw, waitMs = 2500) {
     const fire = () => {
       try { tx.setBroadcast(true); } catch {}
       tx.send(f, PDP_PORT, '255.255.255.255');
-      setTimeout(() => tx.send(f, PDP_PORT, '255.255.255.255'), 300);
+      resend = setTimeout(() => tx.send(f, PDP_PORT, '255.255.255.255'), 300);
       timer = setTimeout(done, waitMs);
     };
     rx.bind(PDP_PORT, () => { if (nicIp) tx.bind(0, nicIp, fire); else tx.bind(0, fire); });

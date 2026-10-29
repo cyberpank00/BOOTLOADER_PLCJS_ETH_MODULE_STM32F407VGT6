@@ -152,7 +152,7 @@ because `0x010101` truncates to `0x0101` by coincidence).
 
 **Mandatory.** Every change to bootloader behaviour ships with
 `BOOTLOADER_VERSION` in `Application/flash/flash_map.h` incremented by one minor
-(`0x00000109` → `0x0000010A`). It is reported over Modbus (IR `0x0002`), so it is
+(`0x0000010A` → `0x0000010B`). It is reported over Modbus (IR `0x0002`), so it is
 the only way to identify which bootloader is on a board that will not boot its
 application — an un-bumped change is a defect.
 
@@ -201,6 +201,19 @@ BL 1.8 invariants:
   buffer until MAC/DMA recovery, without KSZ reset. The app jump stops TIM7/DMA
   and disables SysTick after RCC deinit; the MSP handoff is an assembly trampoline.
 
+BL 1.10 invariants:
+- Watchdog (oot_wdg.c, register-level IWDG, LSI/128 reload 4095 = 16.4 s nominal,
+  11.1 s worst case): armed in sm_check_entry() **only when the bootloader stays**,
+  never on the plain jump to the app. Refreshed at the top of oot_run(), in the
+  2 s post-install loop and around HAL_FLASHEx_Erase in lash_if.c (one erase call
+  = up to two 128 KB sectors, ~4 s worst case — keep the timeout well above it).
+  Frozen while a debugger halts the core (DBGMCU). An IWDG cannot be stopped, so
+  after oot_jump_to_app() the application's MX_IWDG_Init() takes over the
+  running counter: **every application must keep starting its IWDG early** (all
+  five do, 8 s). A system reset clears the IWDG, so app->bootloader resets start
+  clean. A watchdog reset re-enters the normal boot decision (valid app starts; an
+  open session / interrupted install is kept or resumed).
+
 BL 1.9 invariants:
 - Abandoned sessions expire: `fw_proto_session_timeout()` (called from
   `sm_commands()`) clears a session — blocks being received, or verified staging
@@ -214,7 +227,7 @@ BL 1.9 invariants:
   current address and retransmits of the pending request are answered/ignored
   without a new probe. Tools must wait ~1.5 s for the reply.
 - Verified on hardware: abandoned-session timeout (4RTD), SET_NET rejection
-  against the PC and two modules, OTA of 12DI/12DQ/4RTD, three bootloaders on
+  against the PC and two modules, OTA of 12DI/12DO/4RTD, three bootloaders on
   one segment, corrupt/erased/half-written application at boot. Real power loss
   mid-erase/program is NOT verified: an SWD reset is serviced only after the Flash
   operation completes (44/44 attempts landed outside it), so it cannot imitate one.
@@ -240,15 +253,19 @@ BL 1.9 invariants:
 
 ## Known gaps (open work)
 
-- **Boot-time addresses are not probed.** The bootloader's derived link-local
-  address (and, in the applications, the stored static address) is applied
-  without an in-use check; only PDP `SET_NET` is probed (bootloader 1.9). A
-  duplicate at boot is rare for link-local (16-bit space) but possible for a
-  mistyped static address — fall back to link-local with a visible flag if this
-  ever matters.
-- **No bootloader watchdog.** A hung bootloader needs a power cycle. An IWDG would
-  have to outlast the worst-case sector erase and be refreshed in the install
-  loop; not done.
+- **DEFERRED (owner has doubts): duplicate IPs that bypass the PDP probe.** Only PDP
+  `SET_NET` is probed (bootloader 1.9+, apps 1.11/1.10/2.11/1.6/1.4). Still
+  unprotected: writing the IP holding registers (HR104..116) + SAVE, and the stored
+  static address applied at boot. The most likely commissioning mistake is switching
+  several modules to static mode (HR116=0) without editing the IP: the factory
+  static fields are `192.168.1.10` on every module, so they all collide. Idea if
+  this is picked up again: probe on HR-SAVE and at boot, and on conflict fall back
+  to link-local without persisting. Do not start without the owner's go-ahead.
+- **Watchdog reset loop.** A hang with a persistent cause (the same state is
+  re-entered after every reset) now shows up as a reset loop of ~16 s cycles
+  instead of a static hang; neither is recoverable over the network. A no-init RAM
+  counter of consecutive IWDG resets (12 spare bytes above the boot-request cell)
+  could make the bootloader stay idle without resuming after N resets — not done.
 - **Real power loss during Flash erase/program is unverified** (see 1.9
   invariants); needs a relay rig on the board supply.
 
@@ -259,7 +276,7 @@ Sibling repos under `E:\STM_Programming\`:
 | Repo | product_id | IR125 | Notes |
 |---|---|---|---|
 | `PLCJS_ETH_MODULE_12DI_D4MG_...` | `0x504C1201` | `0x12D1` | 12 discrete inputs. Reference variant for shared app subsystems. |
-| `PLCJS_ETH_MODULE_12DQ_D4MG_...` | `0x504C1202` | `0x12D0` | 12 discrete outputs. |
+| `PLCJS_ETH_MODULE_12DQ_D4MG_...` | `0x504C1202` | `0x12D0` | 12 discrete outputs. **Product name is 12DO** (PDP name `12DO_xxxx`, `variants.csv` `12do`, ModbusTool map); only the repo / CMake project / artefact names keep the historical `12DQ` spelling. |
 | `PLCJS_ETH_MODULE_4RTD_D4MG_...` | `0x504C0403` | `0x04D1` | 4x RTD, HW2.1 (`hw_revision 0x020100`, ADS1220). **Uses sector 11 for write-once calibration.** HW1.x boards need an `0x010101` build (firmware tag `hw1.1-last`). |
 | `PLCJS_ETH_MODULE_8AIC_D4MG_...` | `0x504C0804` | `0x08AC` | 8x 4–20 mA current inputs (two ADS1220). STAT_LED/FACT_RES on PE9/PE10 like 4RTD. **Also uses sector 11 for write-once calibration.** |
 | `PLCJS_ETH_MODULE_8AOC_D4MG_...` | `0x504C0806` | `0x08A0` | 8x 0–20 mA current outputs (DAC80508 + XTR111). PE9/PE10. **Also uses sector 11 for write-once calibration.** |

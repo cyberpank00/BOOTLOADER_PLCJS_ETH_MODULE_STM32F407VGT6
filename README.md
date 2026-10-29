@@ -13,7 +13,7 @@ application region, and then boots the main firmware.
 
 ## Current status
 
-Current bootloader version: **1.9**. The memory contract is:
+Current bootloader version: **1.10**. The memory contract is:
 
 - bootloader flash base: `0x08000000`
 - application flash base: `0x08040000`
@@ -22,8 +22,8 @@ Current bootloader version: **1.9**. The memory contract is:
 - settings sector used by the application: `0x080C0000`
 
 Previous releases were exercised on hardware in these scenarios. Versions
-1.8/1.9 have host regression tests and build verification, and were verified on
-real 12DI, 12DQ and 4RTD boards (OTA of each application, three modules in the
+1.8-1.10 have host regression tests and build verification, and were verified on
+real 12DI, 12DO and 4RTD boards (OTA of each application, three modules in the
 bootloader at once, abandoned-session timeout, SET_NET conflict rejection,
 corrupt/erased/half-written application at boot). Not yet verified: a real power
 loss in the middle of a Flash erase/program (an SWD reset is serviced only after
@@ -69,7 +69,7 @@ Identity constants (defaults for the 12-DI/D4MG variant, CMake-configurable):
 |---|---|---|
 | `PRODUCT_ID_DEFAULT` | `0x504C1201` | `-DPRODUCT_ID=0x...` |
 | `HW_REVISION_DEFAULT` | `0x010101` | `-DHW_REVISION=0x...` |
-| `BOOTLOADER_VERSION` | `1.9` | — |
+| `BOOTLOADER_VERSION` | `1.10` | — |
 | `FW_MAX_BLOCK_SIZE` | `240` bytes | — |
 
 ## Network configuration
@@ -326,6 +326,16 @@ Version 1.8 distinguishes upload from installation:
   application it stays in the bootloader. An idle bootloader entered on request
   (no session) never times out. Verified on a 4RTD: client killed mid-transfer,
   application back after about 2 minutes.
+- Watchdog (1.10): an independent watchdog is armed whenever the bootloader stays
+  (update/recovery mode) and never on the plain jump into the application. Timeout
+  about 16 s nominal (11 s worst case), refreshed by the main loop and around each
+  Flash erase (a sector erase stalls the CPU for up to ~2 s); frozen while a debugger
+  halts the core. A hang resets the board; the normal boot logic then decides (valid
+  application starts, an open session or interrupted install is resumed/kept).
+  After the jump the application's own IWDG init takes over the running counter
+  (an IWDG cannot be stopped), so every application must start its IWDG early.
+  Verified on a 4RTD: forced hang reset in about 15-20 s, debugger halt of 25 s did
+  not reset, a full OTA and the handoff ran without a watchdog reset.
 - PDP SET_NET is applied only after an address probe (1.9): three ARP probes
   (sender 0.0.0.0, 200 ms apart) plus 300 ms wait, detected on the receive path
   by `addr_probe_input()`. If any station already answers for the address (a
@@ -522,7 +532,7 @@ failure before installation leaves the existing application untouched.
 - the boot-time link-local address is deterministic and not probed (PDP
   `SET_NET` addresses are probed since 1.9); resolve observed conflicts with
   individually targeted PDP addressing
-- no watchdog is enabled in the bootloader
+- the bootloader watchdog (1.10) is armed only in update/recovery mode; a hang with a persistent cause becomes a reset loop instead of a static hang (see Recovery notes)
 - no authentication or access control is implemented for OTA commands
 - only one Modbus TCP client can be connected at a time
 - staging area is limited to `256 KB`

@@ -5,6 +5,7 @@
 
 #include "flash_if.h"
 #include "flash_map.h"
+#include "boot_wdg.h"
 #include "stm32f4xx_hal.h"
 #include <string.h>
 
@@ -28,7 +29,9 @@ bool flash_if_erase_sectors(uint32_t first_sector, uint32_t count)
     };
     uint32_t sector_error = 0;
 
+    boot_wdg_refresh();   /* a 128 KB sector erase stalls the CPU for up to ~2 s */
     HAL_StatusTypeDef rc = HAL_FLASHEx_Erase(&erase, &sector_error);
+    boot_wdg_refresh();
     HAL_FLASH_Lock();
     return rc == HAL_OK;
 }

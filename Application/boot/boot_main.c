@@ -8,6 +8,7 @@
 #include "boot_state.h"
 #include "boot_entry.h"
 #include "boot_jump.h"
+#include "boot_wdg.h"
 #include "flash_map.h"
 #include "metadata.h"
 #include "app_validate.h"
@@ -46,6 +47,8 @@ static void sm_start(void)
 static void sm_check_entry(void)
 {
     if (boot_entry_should_stay(&s_meta)) {
+        /* Update/recovery mode only; the plain jump into the app never starts it. */
+        boot_wdg_start();
         MX_LWIP_Init();
         modbus_boot_server_init(&s_meta, 502u);
         /* Discovery responder so a bootloader-mode device is found and
@@ -162,6 +165,7 @@ static void sm_verify_app(void)
         uint32_t t0 = HAL_GetTick();
         while ((HAL_GetTick() - t0) < 2000u) {
             led_indication_poll(HAL_GetTick());
+            boot_wdg_refresh();
             ethernet_poll();
             modbus_boot_server_poll();
         }
@@ -190,6 +194,7 @@ void boot_run(void)
 
     for (;;) {
         uint32_t now = HAL_GetTick();
+        boot_wdg_refresh();
         led_indication_poll(now);
 
         /* A discovery REBOOT command resets outside the UDP callback. */

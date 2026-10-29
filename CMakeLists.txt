@@ -96,6 +96,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Application/boot/boot_main.c
     Application/boot/boot_entry.c
     Application/boot/boot_jump.c
+    Application/boot/boot_wdg.c
     Application/flash/flash_if.c
     Application/flash/metadata.c
     Application/crc/crc32.c

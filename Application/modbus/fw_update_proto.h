@@ -89,6 +89,14 @@ extern "C" {
 #define CMD_ABORT_UPDATE        4u
 #define CMD_REBOOT              5u
 
+/* An update session (blocks being received, or a verified staging image waiting
+ * for INSTALL) with no client write for this long is dropped: the session is
+ * reset and, when the installed application is valid, the board resets into it.
+ * Idle bootloader mode (no session) never times out. */
+#ifndef FW_SESSION_TIMEOUT_MS
+#define FW_SESSION_TIMEOUT_MS   120000u
+#endif
+
 #define CMD_STATUS_IDLE         0u
 #define CMD_STATUS_BUSY         1u
 #define CMD_STATUS_OK           2u
@@ -99,6 +107,10 @@ void     fw_proto_poll(metadata_t *meta);
 bool     fw_proto_reboot_requested(void);
 bool     fw_proto_install_requested(void);
 bool     fw_proto_busy(void);
+/* Call periodically with a millisecond tick. Returns true once an update session
+ * timed out AND the installed application is valid, i.e. the caller should reset
+ * into the application. The session metadata is already cleared at that point. */
+bool     fw_proto_session_timeout(uint32_t now_ms);
 void     fw_proto_install_done(void);
 void     fw_proto_install_error(void);
 

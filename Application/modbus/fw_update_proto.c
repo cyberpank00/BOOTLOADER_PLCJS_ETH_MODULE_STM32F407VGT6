@@ -50,10 +50,15 @@ static uint16_t    s_params[32];        /* HR 0x0000 – 0x001F */
 static uint16_t    s_block_buf[128];    /* HR 0x0100 – 0x017F */
 static bool        s_reboot_req;
 static bool        s_install_req;
+static uint32_t    s_activity;          /* counts client write requests */
+static uint32_t    s_activity_seen;
+static uint32_t    s_activity_tick;
+static bool        s_act_init;
 
 void fw_proto_init(metadata_t *meta)
 {
     s_meta       = meta;
+    s_act_init   = false;
     s_cmd_status = meta->install_in_progress ? CMD_STATUS_BUSY :
                    meta->last_error != BOOT_ERR_NONE ? CMD_STATUS_ERROR : CMD_STATUS_IDLE;
     s_reboot_req = false;
@@ -281,7 +286,7 @@ static void exec_install(void)
     s_cmd_status  = CMD_STATUS_BUSY;
 }
 
-static void exec_abort(void)
+static bool abort_session(uint32_t err)
 {
     metadata_t next = *s_meta;
     next.boot_state           = (uint32_t)BOOT_WAIT_COMMAND;
@@ -292,9 +297,14 @@ static void exec_abort(void)
     next.block_count          = 0u;
     next.image_size           = 0u;
     next.image_crc32          = 0u;
-    next.last_error           = (uint32_t)BOOT_ERR_NONE;
+    next.last_error           = err;
     memset(next.block_bitmap, 0, sizeof(next.block_bitmap));
-    if (!commit_metadata(&next)) return;
+    return commit_metadata(&next);
+}
+
+static void exec_abort(void)
+{
+    if (!abort_session((uint32_t)BOOT_ERR_NONE)) return;
 
     s_cmd_status = CMD_STATUS_OK;
 }
@@ -304,6 +314,28 @@ void fw_proto_poll(metadata_t *meta)
 {
     s_meta = meta;
     /* No periodic work — commands are processed in write callback. */
+}
+
+bool fw_proto_session_timeout(uint32_t now_ms)
+{
+    const bool active = s_meta != NULL &&
+        (s_meta->boot_state == (uint32_t)BOOT_RECEIVE_FW ||
+         s_meta->boot_state == (uint32_t)BOOT_VERIFY_STAGING ||
+         s_meta->staging_valid);
+
+    /* Any client write restarts the window; no session means nothing to expire. */
+    if (!s_act_init || s_activity != s_activity_seen || !active) {
+        s_act_init      = true;
+        s_activity_seen = s_activity;
+        s_activity_tick = now_ms;
+        return false;
+    }
+    if ((uint32_t)(now_ms - s_activity_tick) < FW_SESSION_TIMEOUT_MS) return false;
+
+    s_activity_tick = now_ms;
+    if (!abort_session((uint32_t)BOOT_ERR_UPDATE_TIMEOUT)) return false;
+    return s_meta->app_valid &&
+           app_validate_full(APP_FLASH_BASE, s_meta->app_image_size, s_meta->app_image_crc32);
 }
 
 bool fw_proto_reboot_requested(void)  { return s_reboot_req; }
@@ -394,6 +426,7 @@ nmbs_error fw_proto_read_holding_regs(uint16_t addr, uint16_t qty,
 nmbs_error fw_proto_write_holding_regs(uint16_t addr, uint16_t qty,
                                        const uint16_t *in)
 {
+    s_activity++;
     if (fw_proto_busy()) return NMBS_EXCEPTION_SERVER_DEVICE_BUSY;
     if (qty == 0u) return NMBS_EXCEPTION_ILLEGAL_DATA_VALUE;
     /* Block data region (0x0100+) */

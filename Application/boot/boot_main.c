@@ -86,6 +86,11 @@ static void sm_commands(void)
         HAL_NVIC_SystemReset();
     }
 
+    /* Abandoned OTA session: session cleared, back into the valid application. */
+    if (fw_proto_session_timeout(HAL_GetTick())) {
+        HAL_NVIC_SystemReset();
+    }
+
     if (fw_proto_install_requested()) {
         if (fw_installer_start(&s_meta)) {
             s_state = BOOT_INSTALL_FW;

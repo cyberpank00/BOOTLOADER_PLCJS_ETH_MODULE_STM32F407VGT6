@@ -14,6 +14,7 @@
 #include "ethernetif.h"
 #include "eth_custom_phy_interface.h"
 #include "net_id.h"
+#include "addr_probe.h"
 #include <string.h>
 
 #define IFNAME0 's'
@@ -264,6 +265,7 @@ void ethernetif_input(struct netif *netif)
     HAL_ETH_ReadData(&heth, (void **)&p);
 
     while (p != NULL) {
+        addr_probe_input(p);
         if (netif->input(p, netif) != ERR_OK) {
             pbuf_free(p);
         }

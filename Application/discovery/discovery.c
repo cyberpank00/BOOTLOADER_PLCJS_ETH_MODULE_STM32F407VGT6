@@ -31,6 +31,7 @@
 #include <string.h>
 
 #include "net_id.h"
+#include "addr_probe.h"
 #include "fw_update_proto.h"
 #include "led_indication.h"
 #include "flash_map.h"   /* PRODUCT_ID_DEFAULT, HW_REVISION_DEFAULT, BOOTLOADER_VERSION */
@@ -98,6 +99,26 @@ static void pdp_reply_status(uint8_t req_op, const uint8_t txid[2], uint8_t stat
     pdp_send((uint8_t)(req_op | PDP_RESP_FLAG), txid, &status, 1u);
 }
 
+/* SET_NET is applied only after the address passed the in-use probe. */
+static bool       s_set_pending;
+static uint8_t    s_set_txid[2];
+static uint8_t    s_set_mode;
+static ip4_addr_t s_set_ip, s_set_mask, s_set_gw;
+
+static void set_net_probe_done(bool in_use, void* arg)
+{
+    LWIP_UNUSED_ARG(arg);
+    s_set_pending = false;
+    if (in_use) {
+        pdp_reply_status(PDP_OP_SET_NET, s_set_txid, PDP_STATUS_ERR);
+        return;
+    }
+    /* NO_SYS: safe to reconfigure the netif directly from the timer callback. */
+    netif_set_addr(&gnetif, &s_set_ip, &s_set_mask, &s_set_gw);
+    s_net_mode = s_set_mode;
+    pdp_reply_status(PDP_OP_SET_NET, s_set_txid, PDP_STATUS_OK);
+}
+
 static void pdp_recv(void* arg, struct udp_pcb* pcb, struct pbuf* p,
                      const ip_addr_t* addr, u16_t port)
 {
@@ -160,6 +181,7 @@ static void pdp_recv(void* arg, struct udp_pcb* pcb, struct pbuf* p,
         if (plen < 1u) { pdp_reply_status(opcode, txid, PDP_STATUS_ERR); break; }
         const uint8_t mode = pl[0];
         ip4_addr_t ip, mask, gw;
+        ip4_addr_set_zero(&gw);
         if (mode == PDP_NET_LINKLOCAL) {
             uint8_t ll[4];
             net_id_get_linklocal(ll);
@@ -176,10 +198,27 @@ static void pdp_recv(void* arg, struct udp_pcb* pcb, struct pbuf* p,
             pdp_reply_status(opcode, txid, PDP_STATUS_ERR);
             break;
         }
-        /* NO_SYS: safe to reconfigure the netif directly from this callback. */
-        netif_set_addr(&gnetif, &ip, &mask, &gw);
-        s_net_mode = mode;
-        pdp_reply_status(opcode, txid, PDP_STATUS_OK);
+        /* Re-applying the address the device already has (client retransmits,
+         * mask/gateway change) needs no probe. */
+        if (ip4_addr_cmp(&ip, netif_ip4_addr(&gnetif))) {
+            netif_set_addr(&gnetif, &ip, &mask, &gw);
+            s_net_mode = mode;
+            pdp_reply_status(opcode, txid, PDP_STATUS_OK);
+            break;
+        }
+        /* A retransmit of the request being probed gets the single answer later. */
+        if (s_set_pending) {
+            if (memcmp(txid, s_set_txid, 2) != 0) { pdp_reply_status(opcode, txid, PDP_STATUS_ERR); }
+            break;
+        }
+        s_set_ip = ip; s_set_mask = mask; s_set_gw = gw;
+        s_set_mode = mode;
+        memcpy(s_set_txid, txid, 2);
+        s_set_pending = true;
+        if (!addr_probe_start(&gnetif, &ip, set_net_probe_done, NULL)) {
+            s_set_pending = false;
+            pdp_reply_status(opcode, txid, PDP_STATUS_ERR);
+        }
         break;
     }
     case PDP_OP_FLASH_LED: {

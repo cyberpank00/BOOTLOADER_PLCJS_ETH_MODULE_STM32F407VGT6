@@ -13,7 +13,7 @@ application region, and then boots the main firmware.
 
 ## Current status
 
-Current bootloader version: **1.8**. The memory contract is:
+Current bootloader version: **1.9**. The memory contract is:
 
 - bootloader flash base: `0x08000000`
 - application flash base: `0x08040000`
@@ -21,9 +21,13 @@ Current bootloader version: **1.8**. The memory contract is:
 - staging area: `0x08080000 .. 0x080BFFFF` (256 KB contiguous window)
 - settings sector used by the application: `0x080C0000`
 
-Previous releases were exercised on hardware in these scenarios. Version 1.8
-has host regression tests and build verification; it still requires a new
-hardware OTA, power-cut and warm-reset campaign:
+Previous releases were exercised on hardware in these scenarios. Versions
+1.8/1.9 have host regression tests and build verification, and were verified on
+real 12DI, 12DQ and 4RTD boards (OTA of each application, three modules in the
+bootloader at once, abandoned-session timeout, SET_NET conflict rejection,
+corrupt/erased/half-written application at boot). Not yet verified: a real power
+loss in the middle of a Flash erase/program (an SWD reset is serviced only after
+the Flash operation finishes, so it cannot imitate one):
 
 - warm reset cycle `app -> bootloader -> app`
 - repeated handoff cycles without power cycling
@@ -65,7 +69,7 @@ Identity constants (defaults for the 12-DI/D4MG variant, CMake-configurable):
 |---|---|---|
 | `PRODUCT_ID_DEFAULT` | `0x504C1201` | `-DPRODUCT_ID=0x...` |
 | `HW_REVISION_DEFAULT` | `0x010101` | `-DHW_REVISION=0x...` |
-| `BOOTLOADER_VERSION` | `1.8` | — |
+| `BOOTLOADER_VERSION` | `1.9` | — |
 | `FW_MAX_BLOCK_SIZE` | `240` bytes | — |
 
 ## Network configuration
@@ -100,7 +104,9 @@ See `Application/discovery/discovery.c`.
 - `IDENTIFY` (0x01/0x81) — product id, hw, fw, net mode, `in_bootloader`, IP,
   mask, name. Responses are broadcast, so they cross subnet mismatches on one
   L2 segment.
-- `SET_NET` (0x02) — assign static / DHCP / link-local (applied live).
+- `SET_NET` (0x02) — assign static / link-local (applied live after an
+  address-in-use probe; status 1 if the address is taken or the bootloader is
+  busy; DHCP is not supported in the bootloader).
 - `SET_NAME` (0x03), `FLASH_LED` (0x04), `REBOOT` (0x05), `FACTORY` (0x06).
   (The bootloader returns an error for SET_NAME/FACTORY — no persistent store.)
 
@@ -312,6 +318,21 @@ Version 1.8 distinguishes upload from installation:
 - BEGIN, blocks, ABORT and REBOOT are blocked during installation/final checking
   with Modbus exception 6. PDP SET_NET/REBOOT are also blocked and require a
   nonzero target MAC. IDENTIFY remains available.
+- An abandoned update session does not hold the board in the bootloader forever
+  (1.9): when blocks are being received or verified staging waits for INSTALL,
+  and no client write arrives for `FW_SESSION_TIMEOUT_MS` (120 s), the session
+  is cleared (`last_error = UPDATE_TIMEOUT`) and, if the installed application
+  passes the full CRC check, the board resets into it. Without a valid
+  application it stays in the bootloader. An idle bootloader entered on request
+  (no session) never times out. Verified on a 4RTD: client killed mid-transfer,
+  application back after about 2 minutes.
+- PDP SET_NET is applied only after an address probe (1.9): three ARP probes
+  (sender 0.0.0.0, 200 ms apart) plus 300 ms wait, detected on the receive path
+  by `addr_probe_input()`. If any station already answers for the address (a
+  PC, a PLC, another module) the reply is status 1 and the address is not
+  changed; otherwise it is applied and answered with status 0 after about one
+  second. Re-sending the same request, or setting the address the board already
+  has, is answered at once. Verified against the PC and two other modules.
 
 Block size is 4..240 bytes, divisible by four; count must equal
 `ceil(image_size/block_size)`. Every non-final block has the configured size;
@@ -498,8 +519,9 @@ failure before installation leaves the existing application untouched.
 
 ## Known limitations
 
-- link-local addressing is deterministic, without duplicate-address negotiation;
-  resolve observed conflicts with individually targeted PDP addressing
+- the boot-time link-local address is deterministic and not probed (PDP
+  `SET_NET` addresses are probed since 1.9); resolve observed conflicts with
+  individually targeted PDP addressing
 - no watchdog is enabled in the bootloader
 - no authentication or access control is implemented for OTA commands
 - only one Modbus TCP client can be connected at a time

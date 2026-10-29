@@ -72,6 +72,7 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     Application/installer
     Application/net_id
     Application/discovery
+    Application/addr_probe
     Application/third_party/nanomodbus
 )
 
@@ -106,6 +107,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Application/net_id/net_id.c
     Application/net_id/netbiosns.c
     Application/discovery/discovery.c
+    Application/addr_probe/addr_probe.c
     Application/third_party/nanomodbus/nanomodbus.c
 )
 

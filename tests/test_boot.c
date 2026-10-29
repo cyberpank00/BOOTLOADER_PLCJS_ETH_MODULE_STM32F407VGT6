@@ -319,6 +319,55 @@ static void test_finalize_crc(void)
     assert(!s_meta.staging_valid && !erases[6]);
 }
 
+static void touch_session(void)
+{
+    uint16_t param = 0;
+    assert(fw_proto_write_holding_regs(0x10, 1, &param) == NMBS_ERROR_NONE);
+}
+
+static void test_session_timeout(void)
+{
+    const uint32_t T = FW_SESSION_TIMEOUT_MS;
+
+    /* Idle bootloader (no session) never expires. */
+    fixture();
+    assert(!fw_proto_session_timeout(1000));
+    assert(!fw_proto_session_timeout(1000 + 10u * T));
+    assert(s_meta.boot_state == BOOT_WAIT_COMMAND && s_meta.last_error == BOOT_ERR_NONE);
+
+    /* Verified staging waiting for INSTALL, no valid application: the window is
+     * restarted by client writes, expiry clears the session and stays in BL. */
+    receive_image();
+    assert(s_meta.staging_valid);
+    assert(!fw_proto_session_timeout(1000));
+    assert(!fw_proto_session_timeout(1000 + T - 1u));
+    touch_session();
+    assert(!fw_proto_session_timeout(1000 + T + 10u));          /* window restarts here */
+    assert(!fw_proto_session_timeout(1000 + T + 10u + T - 1u));
+    assert(!fw_proto_session_timeout(1000 + T + 10u + T));      /* expires, app invalid */
+    assert(s_meta.boot_state == BOOT_WAIT_COMMAND && !s_meta.staging_valid);
+    assert(s_meta.last_error == BOOT_ERR_UPDATE_TIMEOUT && !s_meta.received_block_count);
+    reset_boot();
+    assert(s_state == BOOT_WAIT_COMMAND);
+
+    /* Block reception with a valid installed application: expiry asks the caller
+     * to reset into it, and the next boot really starts the application. */
+    fixture();
+    memcpy(at(APP_FLASH_BASE), image, sizeof(image));
+    s_meta.app_valid = 1u;
+    s_meta.app_image_size = sizeof(image);
+    s_meta.app_image_crc32 = crc32_calc(image, sizeof(image));
+    assert(metadata_save(&s_meta));
+    begin(240, 4);
+    block(0, 240, false);
+    assert(s_meta.boot_state == BOOT_RECEIVE_FW);
+    assert(!fw_proto_session_timeout(5000));
+    assert(fw_proto_session_timeout(5000 + T));
+    assert(s_meta.boot_state == BOOT_WAIT_COMMAND && !s_meta.received_block_count);
+    reset_boot();
+    assert(s_state == BOOT_READY_TO_BOOT && s_meta.app_valid);
+}
+
 int main(void)
 {
     map_memory(0x08000000u, 0x100000u);
@@ -328,6 +377,7 @@ int main(void)
     test_failures();
     test_vectors_and_flash();
     test_finalize_crc();
+    test_session_timeout();
     puts("Boot, Flash, blocks, metadata and power-loss tests passed");
     return 0;
 }

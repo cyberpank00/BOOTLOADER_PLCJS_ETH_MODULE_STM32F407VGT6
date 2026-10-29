@@ -89,7 +89,7 @@
  * 24-bit value drops the major byte (0x020100 -> 0x0100, major 1). */
 #define HW_REVISION_DEFAULT_U16 ((uint16_t)(HW_REVISION_DEFAULT >> 8u))
 /* BL version encoding: (major << 8) | minor  — mirrors fw_version in fw_header_t */
-#define BOOTLOADER_VERSION      0x00000108u  /* 1.8 */
+#define BOOTLOADER_VERSION      0x00000109u  /* 1.9 */
 
 /* Maximum firmware block size for Modbus transfer (bytes). */
 #define FW_MAX_BLOCK_SIZE       240u

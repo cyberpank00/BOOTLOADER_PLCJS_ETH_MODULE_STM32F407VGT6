@@ -79,7 +79,8 @@ not hardware. "Hardware verified" still requires a real OTA/power-cut campaign.
 | `installer/fw_installer.c` | Copies staging → application. |
 | `modbus/fw_update_proto.c` | The OTA register interface. **Protocol documented in the header comment of `fw_update_proto.h`.** |
 | `modbus/modbus_boot_server.c` | Modbus TCP server used while in the bootloader. |
-| `discovery/` | PDP responder — advertises `inBoot` so tools can find a bootloader by MAC. |
+| `discovery/` | PDP responder — advertises `inBoot` so tools can find a bootloader by MAC. SET_NET is applied only after the `addr_probe` check. |
+| `addr_probe/` | Non-blocking ARP address-in-use probe (3 probes + wait, lwIP timers). **`LWIP/Target/ethernetif.c` must call `addr_probe_input(p)` for every received frame before `netif->input()`**; the file is mirrored in every application firmware. |
 | `net_id/` | MAC / link-local IPv4 from the MCU UID — identical algorithm to the apps, so the address does not change across the app↔bootloader transition. |
 | `net_id/netbiosns.c` | NetBIOS name responder. |
 | `crc/crc32.c` | CRC32 used for image verification. |
@@ -150,7 +151,7 @@ because `0x010101` truncates to `0x0101` by coincidence).
 
 **Mandatory.** Every change to bootloader behaviour ships with
 `BOOTLOADER_VERSION` in `Application/flash/flash_map.h` incremented by one minor
-(`0x00000108` → `0x00000109`). It is reported over Modbus (IR `0x0002`), so it is
+(`0x00000109` → `0x0000010A`). It is reported over Modbus (IR `0x0002`), so it is
 the only way to identify which bootloader is on a board that will not boot its
 application — an un-bumped change is a defect.
 
@@ -199,6 +200,24 @@ BL 1.8 invariants:
   buffer until MAC/DMA recovery, without KSZ reset. The app jump stops TIM7/DMA
   and disables SysTick after RCC deinit; the MSP handoff is an assembly trampoline.
 
+BL 1.9 invariants:
+- Abandoned sessions expire: `fw_proto_session_timeout()` (called from
+  `sm_commands()`) clears a session — blocks being received, or verified staging
+  waiting for INSTALL — after `FW_SESSION_TIMEOUT_MS` (120 s) without a client
+  write, sets `last_error = UPDATE_TIMEOUT`, and resets into the application only
+  if it passes the full CRC check (otherwise the board stays in the bootloader).
+  An idle bootloader without a session never expires. The logic is in
+  `fw_update_proto.c` (no HAL dependency) so host tests cover it.
+- PDP `SET_NET` answers only after `addr_probe` finished: status 1 if the address
+  answers (PC, PLC or another module), status 0 once applied. Re-applying the
+  current address and retransmits of the pending request are answered/ignored
+  without a new probe. Tools must wait ~1.5 s for the reply.
+- Verified on hardware: abandoned-session timeout (4RTD), SET_NET rejection
+  against the PC and two modules, OTA of 12DI/12DQ/4RTD, three bootloaders on
+  one segment, corrupt/erased/half-written application at boot. Real power loss
+  mid-erase/program is NOT verified: an SWD reset is serviced only after the Flash
+  operation completes (44/44 attempts landed outside it), so it cannot imitate one.
+
 ## Gotchas
 
 - **Never brick the recovery path.** Any change to `boot_entry.c`,
@@ -220,18 +239,17 @@ BL 1.8 invariants:
 
 ## Known gaps (open work)
 
-- **No IP-conflict check on PDP `SET_NET`.** `discovery.c` applies the address
-  with `netif_set_addr()` without checking whether another host already owns it;
-  the link-local default has no ACD either (`LWIP_AUTOIP 0`). The assignment is
-  live only (not persisted in the bootloader), so a duplicate disappears on the
-  next reset but until then two devices fight over the address. The same gap
-  exists in every application's `discovery/`. Planned fix, both layers:
-  firmware probes the address (ARP probe / lwIP ACD) before applying it and
-  replies `PDP_STATUS_ERR` if it is taken (covers non-PDP hosts such as the PC
-  or a PLC); the tools (`fw_update.mjs`, ModbusTool `Pdp.cpp`) run a broadcast
-  IDENTIFY first and refuse an address already reported by another MAC. Needs
-  the same change in the bootloader, all five application firmwares and
-  ModbusTool.
+- **Boot-time addresses are not probed.** The bootloader's derived link-local
+  address (and, in the applications, the stored static address) is applied
+  without an in-use check; only PDP `SET_NET` is probed (bootloader 1.9). A
+  duplicate at boot is rare for link-local (16-bit space) but possible for a
+  mistyped static address — fall back to link-local with a visible flag if this
+  ever matters.
+- **No bootloader watchdog.** A hung bootloader needs a power cycle. An IWDG would
+  have to outlast the worst-case sector erase and be refreshed in the install
+  loop; not done.
+- **Real power loss during Flash erase/program is unverified** (see 1.9
+  invariants); needs a relay rig on the board supply.
 
 ## Multi-repo workspace
 
